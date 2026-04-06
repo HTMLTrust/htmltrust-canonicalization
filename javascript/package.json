@@ -1,0 +1,14 @@
+{
+  "name": "@htmltrust/canonicalization",
+  "version": "0.1.0",
+  "description": "HTMLTrust canonical text normalization — zero dependencies, browser + Node.js",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": ["index.js", "index.d.ts"],
+  "keywords": ["htmltrust", "canonicalization", "normalization", "unicode", "content-signing"],
+  "author": "Jason Grey <jason@jason-grey.com>",
+  "license": "MIT"
+}
