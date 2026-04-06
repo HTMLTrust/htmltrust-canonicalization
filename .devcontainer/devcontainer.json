@@ -1,0 +1,26 @@
+{
+  "name": "HTMLTrust Canonicalization",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    },
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.23"
+    },
+    "ghcr.io/devcontainers/features/php:1": {
+      "version": "8.3",
+      "installComposer": true
+    }
+  },
+  "postCreateCommand": "cd go && go mod tidy && cd ../php && composer install --no-interaction",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "bmewburn.vscode-intelephense-client",
+        "dbaeumer.vscode-eslint"
+      ]
+    }
+  }
+}
