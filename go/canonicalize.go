@@ -32,8 +32,8 @@ var whitespaceRE = regexp.MustCompile("[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2
 var multiSpaceRE = regexp.MustCompile(" {2,}")
 
 // Phase 3: Quotation marks.
-var singleQuoteRE = regexp.MustCompile("[\u2018\u2019\u201A\u201B\u2039\u203A\u0060\u00B4\u2032]")
-var doubleQuoteRE = regexp.MustCompile("[\u201C\u201D\u201E\u201F\u00AB\u00BB\u2033\u301D\u301E\u301F]")
+var singleQuoteRE = regexp.MustCompile("[\u2018\u2019\u201B\u2039\u203A\u0060\u00B4\u2032]")
+var doubleQuoteRE = regexp.MustCompile("[\u201A\u201C\u201D\u201E\u201F\u00AB\u00BB\u2033\u301D\u301E\u301F]")
 var cjkQuoteRE = regexp.MustCompile("[\u300C\u300D\u300E\u300F\uFE41-\uFE44]")
 
 // Phase 4: Dashes → U+002D (includes minus sign U+2212 from Phase 5).

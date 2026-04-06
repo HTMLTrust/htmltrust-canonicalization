@@ -40,13 +40,13 @@ class Canonicalize
      * Phase 3: Single quotes → U+0027 APOSTROPHE.
      */
     private const SINGLE_QUOTE_PATTERN =
-        '/[\x{2018}\x{2019}\x{201A}\x{201B}\x{2039}\x{203A}\x{0060}\x{00B4}\x{2032}]/u';
+        '/[\x{2018}\x{2019}\x{201B}\x{2039}\x{203A}\x{0060}\x{00B4}\x{2032}]/u';
 
     /**
      * Phase 3: Double quotes → U+0022 QUOTATION MARK.
      */
     private const DOUBLE_QUOTE_PATTERN =
-        '/[\x{201C}\x{201D}\x{201E}\x{201F}\x{00AB}\x{00BB}\x{2033}\x{301D}\x{301E}\x{301F}]/u';
+        '/[\x{201A}\x{201C}\x{201D}\x{201E}\x{201F}\x{00AB}\x{00BB}\x{2033}\x{301D}\x{301E}\x{301F}]/u';
 
     /**
      * Phase 3: CJK quotation marks → U+0022.
