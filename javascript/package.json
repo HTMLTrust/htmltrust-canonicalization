@@ -1,7 +1,7 @@
 {
   "name": "@htmltrust/canonicalization",
-  "version": "0.1.0",
-  "description": "HTMLTrust canonical text normalization — zero dependencies, browser + Node.js",
+  "version": "0.2.0",
+  "description": "HTMLTrust canonical text normalization, signature verification, and keyid resolution — zero dependencies, browser + Node.js",
   "type": "module",
   "main": "index.js",
   "exports": {
