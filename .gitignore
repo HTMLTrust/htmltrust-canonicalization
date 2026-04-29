@@ -12,6 +12,20 @@ go/go.sum
 php/vendor/
 php/composer.lock
 
+# Python
+python/.venv/
+python/.pytest_cache/
+python/build/
+python/dist/
+python/*.egg-info/
+python/htmltrust_canonicalization.egg-info/
+__pycache__/
+*.pyc
+
+# Rust
+rust/target/
+rust/Cargo.lock
+
 # IDE
 .idea/
 .vscode/
