@@ -1,0 +1,6 @@
+{
+  "name": "basic-ascii",
+  "description": "Plain ASCII passes through unchanged.",
+  "input": "Hello, world!",
+  "expected": "Hello, world!"
+}

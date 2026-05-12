@@ -1,0 +1,6 @@
+{
+  "name": "inline-formatting",
+  "description": "Bold/italic/code inline elements do not affect text extraction.",
+  "input": "<p>This <strong>is</strong> <em>very</em> <code>important</code>.</p>",
+  "expected": "This is very important."
+}

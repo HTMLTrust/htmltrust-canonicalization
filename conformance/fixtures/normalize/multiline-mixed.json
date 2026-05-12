@@ -1,0 +1,6 @@
+{
+  "name": "multiline-mixed",
+  "description": "Newlines, tabs, no-break space (U+00A0) and ideographic space (U+3000) all become single spaces; runs collapse.",
+  "input": "line one\nline\ttwo line　three",
+  "expected": "line one line two line three"
+}

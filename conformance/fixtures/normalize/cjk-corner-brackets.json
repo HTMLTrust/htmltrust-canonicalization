@@ -1,0 +1,6 @@
+{
+  "name": "cjk-corner-brackets",
+  "description": "CJK corner brackets U+300C / U+300D collapse to ASCII double quote.",
+  "input": "「東京」",
+  "expected": "\"東京\""
+}

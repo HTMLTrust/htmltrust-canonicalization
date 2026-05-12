@@ -1,0 +1,6 @@
+{
+  "name": "curly-double-quotes",
+  "description": "U+201C / U+201D collapse to ASCII double quote U+0022.",
+  "input": "“Hello”",
+  "expected": "\"Hello\""
+}

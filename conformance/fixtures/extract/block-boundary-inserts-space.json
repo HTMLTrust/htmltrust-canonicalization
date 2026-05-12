@@ -1,0 +1,6 @@
+{
+  "name": "block-boundary-inserts-space",
+  "description": "Adjacent block elements produce a single-space separator.",
+  "input": "<p>A</p><p>B</p>",
+  "expected": "A B"
+}

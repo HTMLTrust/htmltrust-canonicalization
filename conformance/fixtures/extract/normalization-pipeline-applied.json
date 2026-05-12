@@ -1,0 +1,6 @@
+{
+  "name": "normalization-pipeline-applied",
+  "description": "Curly quotes inside HTML are extracted then normalized to straight ASCII.",
+  "input": "<p>“Hello”</p>",
+  "expected": "\"Hello\""
+}

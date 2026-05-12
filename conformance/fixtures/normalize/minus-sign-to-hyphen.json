@@ -1,0 +1,6 @@
+{
+  "name": "minus-sign-to-hyphen",
+  "description": "Mathematical minus sign (U+2212) collapses to ASCII hyphen-minus.",
+  "input": "3 − 1",
+  "expected": "3 - 1"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "strip-bom",
+  "description": "Byte-order mark (U+FEFF) is stripped.",
+  "input": "﻿hello",
+  "expected": "hello"
+}

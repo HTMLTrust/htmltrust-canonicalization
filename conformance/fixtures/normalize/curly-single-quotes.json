@@ -1,0 +1,6 @@
+{
+  "name": "curly-single-quotes",
+  "description": "U+2018 / U+2019 collapse to ASCII apostrophe U+0027.",
+  "input": "‘Hello’",
+  "expected": "'Hello'"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "strip-zwsp",
+  "description": "Zero-width space (U+200B) is stripped entirely.",
+  "input": "word​word",
+  "expected": "wordword"
+}

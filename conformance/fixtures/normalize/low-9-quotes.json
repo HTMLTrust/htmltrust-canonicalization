@@ -1,0 +1,6 @@
+{
+  "name": "low-9-quotes",
+  "description": "U+201A (single low-9) and U+201C produce paired ASCII double quotes -- single low-9 deliberately maps to double quote per spec phase 3.",
+  "input": "‚German“",
+  "expected": "\"German\""
+}

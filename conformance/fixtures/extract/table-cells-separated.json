@@ -1,0 +1,6 @@
+{
+  "name": "table-cells-separated",
+  "description": "Table rows and cells are block elements -- cells separate with a single space.",
+  "input": "<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>",
+  "expected": "a b c d"
+}

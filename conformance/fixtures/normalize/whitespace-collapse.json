@@ -1,0 +1,6 @@
+{
+  "name": "whitespace-collapse",
+  "description": "Runs of mixed Unicode whitespace collapse to a single ASCII space.",
+  "input": "a  \t  b",
+  "expected": "a b"
+}

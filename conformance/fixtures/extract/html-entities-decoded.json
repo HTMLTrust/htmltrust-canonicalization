@@ -1,0 +1,6 @@
+{
+  "name": "html-entities-decoded",
+  "description": "HTML entities (&amp;, &mdash;) are decoded by the parser before normalization.",
+  "input": "<p>A &amp; B &mdash; C</p>",
+  "expected": "A & B - C"
+}

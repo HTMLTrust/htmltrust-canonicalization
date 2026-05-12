@@ -1,0 +1,6 @@
+{
+  "name": "inline-no-separator",
+  "description": "Inline elements (em, strong, a, span) do not introduce extra whitespace.",
+  "input": "<p>hello <em>world</em></p>",
+  "expected": "hello world"
+}

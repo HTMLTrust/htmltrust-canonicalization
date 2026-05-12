@@ -1,0 +1,8 @@
+{
+  "name": "single-claim",
+  "description": "A single name/value pair serializes as name=value with no trailing newline.",
+  "input": {
+    "License": "CC-BY-4.0"
+  },
+  "expected": "License=CC-BY-4.0"
+}

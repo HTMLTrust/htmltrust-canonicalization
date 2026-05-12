@@ -1,0 +1,10 @@
+{
+  "name": "multiple-claims-ordering",
+  "description": "Multiple claims are sorted lexically by name (regardless of insertion order) and joined with '\\n'.",
+  "input": {
+    "License": "CC-BY-4.0",
+    "AIAssistance": "None",
+    "ContentType": "Article"
+  },
+  "expected": "AIAssistance=None\nContentType=Article\nLicense=CC-BY-4.0"
+}

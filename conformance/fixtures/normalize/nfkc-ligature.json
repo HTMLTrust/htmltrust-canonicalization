@@ -1,0 +1,6 @@
+{
+  "name": "nfkc-ligature",
+  "description": "NFKC decomposes the 'fi' ligature (U+FB01) into 'f' + 'i'.",
+  "input": "ﬁnd",
+  "expected": "find"
+}
