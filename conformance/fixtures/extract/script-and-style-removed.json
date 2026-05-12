@@ -1,0 +1,6 @@
+{
+  "name": "script-and-style-removed",
+  "description": "Content of <script>, <style>, <meta>, <link>, <head>, <noscript> is removed entirely.",
+  "input": "<p>before</p><script>alert(1)</script><style>.x{color:red}</style><meta name=\"claim:License\" content=\"CC-BY-4.0\"><p>after</p>",
+  "expected": "before after"
+}

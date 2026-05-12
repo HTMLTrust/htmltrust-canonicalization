@@ -1,0 +1,6 @@
+{
+  "name": "empty-claims",
+  "description": "An empty claim map serializes to an empty string.",
+  "input": {},
+  "expected": ""
+}

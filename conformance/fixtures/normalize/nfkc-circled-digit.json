@@ -1,0 +1,6 @@
+{
+  "name": "nfkc-circled-digit",
+  "description": "NFKC normalizes U+2460 'circled digit one' to ASCII '1'.",
+  "input": "①",
+  "expected": "1"
+}

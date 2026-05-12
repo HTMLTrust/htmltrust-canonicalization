@@ -1,0 +1,6 @@
+{
+  "name": "guillemets-double",
+  "description": "French guillemets U+00AB / U+00BB collapse to ASCII double quote.",
+  "input": "«Bonjour»",
+  "expected": "\"Bonjour\""
+}

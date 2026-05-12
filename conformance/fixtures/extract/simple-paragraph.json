@@ -1,0 +1,6 @@
+{
+  "name": "simple-paragraph",
+  "description": "Single paragraph extracts to its inner text, trimmed.",
+  "input": "<p>Hello, world!</p>",
+  "expected": "Hello, world!"
+}

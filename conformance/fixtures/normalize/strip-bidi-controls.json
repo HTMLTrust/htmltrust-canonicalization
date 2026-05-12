@@ -1,0 +1,6 @@
+{
+  "name": "strip-bidi-controls",
+  "description": "Bidi embedding/isolate controls (U+202A..U+202E, U+2066..U+2069) are stripped; rely on the HTML dir attribute for directionality.",
+  "input": "a‫b‬c",
+  "expected": "abc"
+}

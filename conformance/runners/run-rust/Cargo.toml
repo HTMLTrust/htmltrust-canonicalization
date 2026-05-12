@@ -1,0 +1,15 @@
+[package]
+name = "htmltrust-conformance-runner"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Reads shared JSON fixtures under conformance/fixtures/ and verifies that the in-tree Rust binding produces byte-identical output."
+
+[[bin]]
+name = "run-rust"
+path = "src/main.rs"
+
+[dependencies]
+htmltrust-canonicalization = { path = "../../../rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }

@@ -1,0 +1,8 @@
+{
+  "name": "unicode-value-nfkc",
+  "description": "NFKC applies inside claim values too (fullwidth digits collapse to ASCII).",
+  "input": {
+    "version": "１．０"
+  },
+  "expected": "version=1.0"
+}

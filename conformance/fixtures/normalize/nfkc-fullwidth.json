@@ -1,0 +1,6 @@
+{
+  "name": "nfkc-fullwidth",
+  "description": "NFKC maps fullwidth Latin letters and digits to ASCII.",
+  "input": "Ａ１",
+  "expected": "A1"
+}

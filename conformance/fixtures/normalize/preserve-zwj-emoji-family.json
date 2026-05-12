@@ -1,0 +1,6 @@
+{
+  "name": "preserve-zwj-emoji-family",
+  "description": "Zero-width joiner (U+200D) is semantic in emoji ZWJ sequences and Indic scripts; the family emoji must survive normalization unchanged.",
+  "input": "👨‍👩‍👧",
+  "expected": "👨‍👩‍👧"
+}

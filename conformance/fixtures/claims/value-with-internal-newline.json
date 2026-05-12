@@ -1,0 +1,8 @@
+{
+  "name": "value-with-internal-newline",
+  "description": "Newlines inside a claim value normalize to a single space (phase 2). This avoids the value containing the inter-entry '\\n' separator.",
+  "input": {
+    "summary": "line one\nline two"
+  },
+  "expected": "summary=line one line two"
+}

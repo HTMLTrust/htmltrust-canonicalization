@@ -1,0 +1,8 @@
+{
+  "name": "normalize-name",
+  "description": "Claim names also run through normalize_text (ellipsis -> three dots).",
+  "input": {
+    "odd…name": "x"
+  },
+  "expected": "odd...name=x"
+}

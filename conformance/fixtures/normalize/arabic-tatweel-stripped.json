@@ -1,0 +1,6 @@
+{
+  "name": "arabic-tatweel-stripped",
+  "description": "Arabic tatweel (U+0640) is a justification character and is stripped.",
+  "input": "كتـــاب",
+  "expected": "كتاب"
+}

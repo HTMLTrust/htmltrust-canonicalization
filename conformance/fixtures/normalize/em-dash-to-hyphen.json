@@ -1,0 +1,6 @@
+{
+  "name": "em-dash-to-hyphen",
+  "description": "Em dash (U+2014) collapses to ASCII hyphen-minus (U+002D).",
+  "input": "word — word",
+  "expected": "word - word"
+}

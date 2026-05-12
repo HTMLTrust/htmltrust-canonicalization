@@ -1,0 +1,6 @@
+{
+  "name": "nested-block-elements",
+  "description": "Deeply nested block structure still collapses to single-space joins.",
+  "input": "<article><header><h1>Title</h1></header><section><p>Para one.</p><p>Para two.</p></section></article>",
+  "expected": "Title Para one. Para two."
+}

@@ -1,0 +1,8 @@
+{
+  "name": "normalize-value",
+  "description": "Claim values are run through normalize_text (curly quotes -> straight).",
+  "input": {
+    "author": "“Alice”"
+  },
+  "expected": "author=\"Alice\""
+}

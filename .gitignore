@@ -26,6 +26,10 @@ __pycache__/
 rust/target/
 rust/Cargo.lock
 
+# Conformance suite artifacts
+conformance/runners/run-rust/target/
+conformance/runners/run-rust/Cargo.lock
+
 # IDE
 .idea/
 .vscode/

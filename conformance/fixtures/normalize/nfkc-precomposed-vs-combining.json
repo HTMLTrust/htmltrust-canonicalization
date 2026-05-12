@@ -1,0 +1,6 @@
+{
+  "name": "nfkc-precomposed-vs-combining",
+  "description": "NFKC composes 'e' + combining acute (U+0301) into precomposed U+00E9. Input uses combining sequence; expected uses precomposed.",
+  "input": "café",
+  "expected": "café"
+}

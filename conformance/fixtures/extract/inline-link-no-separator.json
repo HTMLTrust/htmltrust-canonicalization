@@ -1,0 +1,6 @@
+{
+  "name": "inline-link-no-separator",
+  "description": "Anchor tags are inline; they MUST NOT add a separator.",
+  "input": "<p>see <a href=\"x\">here</a> now</p>",
+  "expected": "see here now"
+}

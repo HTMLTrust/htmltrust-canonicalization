@@ -1,0 +1,6 @@
+{
+  "name": "ellipsis",
+  "description": "Single ellipsis character (U+2026) expands to three ASCII periods.",
+  "input": "Hello…",
+  "expected": "Hello..."
+}

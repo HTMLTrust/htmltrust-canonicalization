@@ -1,0 +1,6 @@
+{
+  "name": "preserve-zwnj",
+  "description": "Zero-width non-joiner (U+200C) is SEMANTIC in Persian/Kurdish/Indic and must be preserved. This fixture verifies it survives normalization.",
+  "input": "word‌word",
+  "expected": "word‌word"
+}

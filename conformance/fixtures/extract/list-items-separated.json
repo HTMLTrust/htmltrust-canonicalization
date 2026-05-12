@@ -1,0 +1,6 @@
+{
+  "name": "list-items-separated",
+  "description": "Each <li> is a block; items separate with a single space.",
+  "input": "<ul><li>a</li><li>b</li><li>c</li></ul>",
+  "expected": "a b c"
+}

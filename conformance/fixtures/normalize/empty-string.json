@@ -1,0 +1,6 @@
+{
+  "name": "empty-string",
+  "description": "Empty string canonicalizes to empty string.",
+  "input": "",
+  "expected": ""
+}
