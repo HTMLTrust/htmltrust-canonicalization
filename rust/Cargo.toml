@@ -1,0 +1,23 @@
+[package]
+name = "htmltrust-canonicalization"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Canonical text normalization and HTML extraction for HTMLTrust signed content. Byte-identical output to the JavaScript, Go, PHP, and Python bindings."
+license = "MIT"
+repository = "https://github.com/HTMLTrust/htmltrust-canonicalization"
+readme = "README.md"
+keywords = ["htmltrust", "canonicalization", "signing", "html", "unicode"]
+categories = ["text-processing", "cryptography"]
+
+[lib]
+name = "htmltrust_canonicalization"
+path = "src/lib.rs"
+
+[dependencies]
+unicode-normalization = "0.1"
+scraper = "0.20"
+ego-tree = "0.6"
+
+[dev-dependencies]
+# pure stdlib tests; nothing extra required.
