@@ -1,4 +1,4 @@
-module github.com/ArcadeLabsInc/htmltrust-canonicalization/go
+module github.com/HTMLTrust/htmltrust-canonicalization/go
 
 go 1.21
 

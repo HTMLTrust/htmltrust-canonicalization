@@ -4,7 +4,7 @@
 // form suitable for content hashing and signing. Zero external dependencies
 // beyond the Go standard library and golang.org/x/text for NFKC.
 //
-// Spec: https://github.com/ArcadeLabsInc/htmltrust-canonicalization
+// Spec: https://github.com/HTMLTrust/htmltrust-canonicalization
 package canonicalize
 
 import (

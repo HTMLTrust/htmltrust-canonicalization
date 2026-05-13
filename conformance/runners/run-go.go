@@ -30,7 +30,7 @@ import (
 	"runtime"
 	"sort"
 
-	canonicalize "github.com/ArcadeLabsInc/htmltrust-canonicalization/go"
+	canonicalize "github.com/HTMLTrust/htmltrust-canonicalization/go"
 )
 
 // fixture is the on-disk shape of every fixture JSON file. The `Input`

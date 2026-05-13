@@ -5,7 +5,7 @@
  * Implements all 8 phases of the HTMLTrust canonicalization spec.
  * Requires PHP 7.2+ with the intl extension (for Normalizer::normalize).
  *
- * Spec: https://github.com/ArcadeLabsInc/htmltrust-canonicalization
+ * Spec: https://github.com/HTMLTrust/htmltrust-canonicalization
  *
  * @package HTMLTrust\Canonicalization
  */

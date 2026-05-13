@@ -1,6 +1,6 @@
 /**
  * HTMLTrust Canonical Text Normalization
- * Spec: https://github.com/ArcadeLabsInc/htmltrust-canonicalization
+ * Spec: https://github.com/HTMLTrust/htmltrust-canonicalization
  *
  * Zero dependencies. Works in browsers and Node.js.
  */

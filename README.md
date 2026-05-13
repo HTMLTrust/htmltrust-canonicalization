@@ -53,7 +53,7 @@ const canonical = normalizeText('He said, \u201CHello\u2026\u201D');
 ### Go
 
 ```go
-import "github.com/ArcadeLabsInc/htmltrust-canonicalization/go"
+import "github.com/HTMLTrust/htmltrust-canonicalization/go"
 
 canonical := canonicalize.Normalize("He said, \u201CHello\u2026\u201D")
 // → "He said, \"Hello...\""
@@ -103,11 +103,11 @@ cd php && composer install && composer test
 
 | Repository | Description |
 |---|---|
-| [htmltrust-spec](https://github.com/ArcadeLabsInc/htmltrust-spec) | The HTMLTrust specification and paper |
-| [htmltrust-server-reference](https://github.com/ArcadeLabsInc/htmltrust-server-reference) | Reference trust directory API server |
-| [htmltrust-browser-reference](https://github.com/ArcadeLabsInc/htmltrust-browser-reference) | Reference browser extension |
-| [htmltrust-cms-reference](https://github.com/ArcadeLabsInc/htmltrust-cms-reference) | Reference CMS plugins (WordPress, Hugo) |
-| [htmltrust-website](https://github.com/ArcadeLabsInc/htmltrust-website) | Project website |
+| [htmltrust-spec](https://github.com/HTMLTrust/htmltrust-spec) | The HTMLTrust specification and paper |
+| [htmltrust-server-reference](https://github.com/HTMLTrust/htmltrust-server-reference) | Reference trust directory API server |
+| [htmltrust-browser-reference](https://github.com/HTMLTrust/htmltrust-browser-reference) | Reference browser extension |
+| [htmltrust-cms-reference](https://github.com/HTMLTrust/htmltrust-cms-reference) | Reference CMS plugins (WordPress, Hugo) |
+| [htmltrust-website](https://github.com/HTMLTrust/htmltrust-website) | Project website |
 
 ## License
 
