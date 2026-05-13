@@ -1,4 +1,5 @@
 [package]
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 name = "htmltrust-conformance-runner"
 version = "0.1.0"
 edition = "2021"

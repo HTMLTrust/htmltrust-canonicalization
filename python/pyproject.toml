@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Canonical text normalization and HTML extraction for HTMLTrust signed content. Byte-identical output to the JavaScript, Go, PHP, and Rust bindings."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 authors = [
     { name = "HTMLTrust contributors" },
 ]

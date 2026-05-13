@@ -1,14 +1,23 @@
 {
   "name": "@htmltrust/canonicalization",
   "version": "0.2.0",
-  "description": "HTMLTrust canonical text normalization, signature verification, and keyid resolution — zero dependencies, browser + Node.js",
+  "description": "HTMLTrust canonical text normalization, signature verification, and keyid resolution \u2014 zero dependencies, browser + Node.js",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js"
   },
-  "files": ["index.js", "index.d.ts"],
-  "keywords": ["htmltrust", "canonicalization", "normalization", "unicode", "content-signing"],
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "keywords": [
+    "htmltrust",
+    "canonicalization",
+    "normalization",
+    "unicode",
+    "content-signing"
+  ],
   "author": "Jason Grey <jason@jason-grey.com>",
-  "license": "MIT"
+  "license": "LicenseRef-PolyForm-Noncommercial-1.0.0"
 }
