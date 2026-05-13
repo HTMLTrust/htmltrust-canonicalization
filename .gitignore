@@ -34,3 +34,4 @@ conformance/runners/run-rust/Cargo.lock
 .idea/
 .vscode/
 *.swp
+conformance/runners/run-go
