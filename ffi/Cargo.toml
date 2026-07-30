@@ -1,0 +1,22 @@
+[package]
+name = "htmltrust-canonicalization-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI and WebAssembly bindings that expose the Rust HTMLTrust canonicalization core to other languages, so every binding runs identical code (byte-identical by construction)."
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+
+[lib]
+name = "htmltrust_canonicalization_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+htmltrust-canonicalization = { path = "../rust" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+# Enable a WebAssembly randomness backend for transitive users of getrandom
+# (ahash, via html5ever/scraper hash maps). Both major versions appear in the
+# tree; feature unification turns the backend on for whichever is used. For
+# getrandom 0.3 the backend is also selected by the cfg in .cargo/config.toml.
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }

@@ -1,0 +1,8 @@
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "--cfg", "getrandom_backend=\"wasm_js\"",
+    # Deeply-nested real-world DOMs overflow the 1 MiB default wasm stack in the
+    # recursive canonicalization walk (native has ~8 MiB and copes). Give wasm a
+    # 32 MiB stack. Passed to wasm-ld as `-z stack-size=<bytes>`.
+    "-C", "link-arg=-z", "-C", "link-arg=stack-size=33554432",
+]
