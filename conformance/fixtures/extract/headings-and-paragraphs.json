@@ -1,6 +1,6 @@
 {
   "name": "headings-and-paragraphs",
-  "description": "Headings (h1-h6) are block elements; mixed with paragraphs they produce single-space-separated text.",
+  "description": "Headings (h1-h6) are boundary-producing elements; mixed with paragraphs they produce line-feed-separated text.",
   "input": "<h1>Title</h1><p>Body paragraph.</p><h2>Subtitle</h2><p>Second paragraph.</p>",
-  "expected": "Title Body paragraph. Subtitle Second paragraph."
+  "expected": "Title\nBody paragraph.\nSubtitle\nSecond paragraph."
 }

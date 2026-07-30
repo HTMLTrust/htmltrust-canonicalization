@@ -4,5 +4,5 @@
   "input": {
     "odd…name": "x"
   },
-  "expected": "odd...name=x"
+  "expected": "odd...name:x\n"
 }

@@ -1,0 +1,9 @@
+{
+  "name": "nonbmp-name-ordering",
+  "description": "Names sort by UTF-8 byte order: U+E000 (BMP PUA) precedes U+1F600 (astral), unlike JS's default UTF-16 code-unit order which would invert them.",
+  "input": {
+    "😀": "emoji",
+    "": "pua"
+  },
+  "expected": ":pua\n😀:emoji\n"
+}

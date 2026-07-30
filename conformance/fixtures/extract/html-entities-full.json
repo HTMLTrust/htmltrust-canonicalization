@@ -1,0 +1,6 @@
+{
+  "name": "html-entities-full",
+  "description": "Full HTML5 named references decode identically across bindings (case-sensitive).",
+  "input": "<p>caf&eacute; na&iuml;ve &Omega; &mdash; &hellip;</p>",
+  "expected": "café naïve Ω - ..."
+}

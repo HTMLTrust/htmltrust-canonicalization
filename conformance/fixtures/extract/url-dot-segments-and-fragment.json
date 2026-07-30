@@ -1,0 +1,6 @@
+{
+  "name": "url-dot-segments-and-fragment",
+  "description": "href host lowercased, default port stripped, dot-segments resolved, query+fragment preserved (WHATWG).",
+  "input": "<p><a href=\"https://Example.COM:443/a/../b?x=1#frag\">l</a></p>",
+  "expected": "@attr:a:href:https://example.com/b?x=1#frag\nl"
+}

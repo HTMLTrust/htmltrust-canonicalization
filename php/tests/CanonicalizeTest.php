@@ -67,7 +67,7 @@ class CanonicalizeTest extends TestCase
                 "\u{2018}Hello\u{2019}", "'Hello'", true,
             ],
             'Low-9 quotes → straight' => [
-                "\u{201A}German\u{201C}", '"German"', true,
+                "\u{201A}German\u{201C}", "'German\"", true,
             ],
             'No-break space → space' => [
                 "a\u{00A0}b", 'a b', true,

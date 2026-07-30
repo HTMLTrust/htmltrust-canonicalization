@@ -1,5 +1,15 @@
 # Canonical Character Equivalences Specification
 
+> **Superseded — non-normative.** This document predates the signed-attribute
+> model and covers only text normalization. The normative canonicalization
+> rules (text normalization **and** element/attribute extraction, block
+> structure, claims, and the signing payload) are defined in the IETF draft
+> `draft-grey-htmltrust` (see `htmltrust-spec/ietf-draft/`). Where this file
+> and the draft disagree, the draft governs. In particular, U+201A is a
+> **single**-quote-class character, and `<pre>` is treated as a normal block
+> in the current revision — both per the draft, which this file no longer
+> tracks. Retained for historical context only.
+
 ## Design Principles
 
 1. **NFKC first** — apply Unicode NFKC normalization before any custom mappings.

@@ -4,6 +4,8 @@
 export interface NormalizeOptions {
   /** Set true for content inside <pre> elements. Default: false. */
   preserveWhitespace?: boolean;
+  /** Signed document base URL, used to canonicalize relative href/src attributes. */
+  baseUrl?: string;
 }
 
 /**
@@ -21,11 +23,9 @@ export function normalizeText(text: string, options?: NormalizeOptions): string;
  *
  * Strips excluded elements (script, style, meta, link, head, noscript) and
  * their contents, converts block-element boundaries to whitespace separators,
- * strips all remaining inline markup, decodes HTML entities, and applies the
- * full text normalization pipeline.
- *
- * Per HTMLTrust spec §2.1, this produces a text-only hash input: markup and
- * attributes of the signed content are NOT covered by the hash.
+ * emits signed semantic attribute records for href, src, alt, and aria-label,
+ * strips remaining inline markup, decodes HTML entities, and applies the full
+ * text normalization pipeline.
  *
  * @param html - HTML fragment to canonicalize
  * @param options - Options passed through to normalizeText
@@ -36,7 +36,7 @@ export function extractCanonicalText(html: string, options?: NormalizeOptions): 
 /**
  * Compute a canonical claims string from a claims map.
  *
- * Claims are serialized as sorted "name=value" pairs joined by newlines.
+ * Claims are serialized as sorted "name:content\n" records.
  * The caller is responsible for hashing the returned string.
  *
  * @param claims - claim name → value map
@@ -44,10 +44,14 @@ export function extractCanonicalText(html: string, options?: NormalizeOptions): 
  */
 export function canonicalizeClaims(claims: Record<string, string>): string;
 
+/** Extract direct child `<meta name content>` claims from a signed-section. */
+export function extractClaimsFromSignedSection(html: string): Record<string, string>;
+
 /** Parts of the canonical signature binding (spec §2.1). */
 export interface SignatureBindingParts {
   contentHash: string;
   claimsHash: string;
+  /** Legacy field name; value must be a serialized Web origin, not a bare hostname. */
   domain: string;
   signedAt: string;
 }
@@ -58,10 +62,21 @@ export interface SignatureBindingParts {
  */
 export function buildSignatureBinding(parts: SignatureBindingParts): string;
 
+/** Validate a canonical serialized Web origin (`scheme://host[:port]`). */
+export function validateSerializedOrigin(origin: string): string;
+
+/** Encode bytes as canonical unpadded standard Base64. */
+export function encodeBase64Unpadded(bytes: Uint8Array | ArrayBuffer | number[]): string;
+
+/** Decode canonical unpadded standard Base64, rejecting padded/base64url forms. */
+export function decodeCanonicalBase64(b64: string): Uint8Array;
+
 /**
  * Verify a signature over `message` with a PEM-encoded public key.
- * Algorithm is one of "ed25519", "ecdsa", "rsa" (case-insensitive).
- * Signature is base64-encoded (padded or unpadded).
+ * Algorithm is one of the spec §7.1 identifiers "ed25519", "ecdsa-p256",
+ * "ecdsa-p384", "rsa-pss-sha256", "rsa-pkcs1-sha256", or the legacy generic
+ * spellings "ecdsa" / "rsa" (case-insensitive). Any other value returns false.
+ * Signature is canonical unpadded standard Base64.
  */
 export function verifySignature(
   message: string,
@@ -74,7 +89,21 @@ export interface ResolvedKey {
   keyid: string;
   publicKeyPem: string;
   algorithm: string;
+  /** `revoked: true` in the key document (spec §8.2). */
+  revoked?: boolean;
+  /** RFC3339 expiry from the key document (spec §8.2). */
+  expires?: string;
 }
+
+/**
+ * True when a resolved key is revoked or expired (spec §8.2). Verifiers MUST
+ * treat this as a "key-revoked" failure and MUST NOT proceed to signature
+ * verification. An unparseable `expires` counts as revoked.
+ */
+export function isKeyRevoked(
+  key: { revoked?: boolean; expires?: string } | null | undefined,
+  now?: number,
+): boolean;
 
 export interface KeyResolver {
   resolve(keyid: string): Promise<ResolvedKey | null>;
@@ -101,11 +130,14 @@ export interface Endorsement {
   endorsement: string;
   signature: string;
   timestamp: string;
-  algorithm?: string;
+  algorithm: string;
 }
 
-/** Build the canonical endorsement binding `{content-hash}:{timestamp}`. */
-export function buildEndorsementBinding(e: Pick<Endorsement, "endorsement" | "timestamp">): string;
+/** Build deterministic canonical JSON for an endorsement with `signature` omitted. */
+export function buildEndorsementBinding(e: Omit<Endorsement, "signature"> & { signature?: string }): string;
+
+/** Deterministically serialize a JSON value with object keys sorted. */
+export function canonicalizeJson(value: unknown): string;
 
 /** Verify a standalone signed endorsement (spec §2.5). */
 export function verifyEndorsement(

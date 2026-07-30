@@ -12,8 +12,7 @@
  *   php run-php.php --update   # rewrite `expected` from the current
  *                              # binding output
  *
- * The PHP binding currently exposes only `Canonicalize::normalizeText()`;
- * extract and claims fixtures are reported as SKIP (not failures).
+ * The PHP binding covers normalize, extract, and claims fixtures.
  *
  * Requires PHP 7.2+ with the intl extension (for Normalizer::normalizeText).
  */
@@ -44,19 +43,23 @@ foreach (array_slice($argv, 1) as $arg) {
  * report SKIP rather than FAIL in that case.
  */
 $runners = [
-    'normalize' => static function ($input) {
-        if (!is_string($input)) {
+    'normalize' => static function (array $fx) {
+        if (!is_string($fx['input'])) {
             throw new RuntimeException('normalize fixture input must be a string');
         }
-        return [Canonicalize::normalizeText($input), true];
+        return [Canonicalize::normalizeText($fx['input']), true];
     },
-    // PHP binding does not yet implement extractCanonicalText.
-    'extract' => static function ($input) {
-        return [null, false];
+    'extract' => static function (array $fx) {
+        if (!is_string($fx['input'])) {
+            throw new RuntimeException('extract fixture input must be a string');
+        }
+        return [Canonicalize::extractCanonicalText($fx['input'], false, $fx['baseURL'] ?? null), true];
     },
-    // PHP binding does not yet implement canonicalizeClaims.
-    'claims' => static function ($input) {
-        return [null, false];
+    'claims' => static function (array $fx) {
+        if (!is_array($fx['input'])) {
+            throw new RuntimeException('claims fixture input must be an object');
+        }
+        return [Canonicalize::canonicalizeClaims($fx['input']), true];
     },
 ];
 
@@ -79,12 +82,33 @@ foreach (['normalize', 'extract', 'claims'] as $suite) {
             continue;
         }
         $fixture = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        $expectError = $fixture['error'] ?? null;
 
         try {
-            [$actual, $implemented] = $runner($fixture['input']);
+            [$actual, $implemented] = $runner($fixture);
         } catch (Throwable $e) {
+            if ($expectError !== null) {
+                if (strpos($e->getMessage(), $expectError) !== false) {
+                    $passed++;
+                    echo "PASS {$id}  (expected error {$expectError})\n";
+                } else {
+                    $failed++;
+                    $msg = "FAIL {$id}\n  expected error: {$expectError}\n  got error:      " . $e->getMessage();
+                    $failures[] = $msg;
+                    echo $msg, "\n";
+                }
+                continue;
+            }
             $failed++;
             $msg = "FAIL {$id}\n  threw: " . $e->getMessage();
+            $failures[] = $msg;
+            echo $msg, "\n";
+            continue;
+        }
+
+        if ($expectError !== null) {
+            $failed++;
+            $msg = "FAIL {$id}\n  expected error: {$expectError}\n  got output:     " . json_encode($actual, JSON_UNESCAPED_UNICODE);
             $failures[] = $msg;
             echo $msg, "\n";
             continue;

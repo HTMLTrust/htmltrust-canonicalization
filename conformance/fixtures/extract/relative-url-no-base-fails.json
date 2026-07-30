@@ -1,0 +1,6 @@
+{
+  "name": "relative-url-no-base-fails",
+  "description": "A relative href with no base URL MUST fail attribute-canonicalization-failed (draft §4.3.2).",
+  "input": "<p><a href=\"x\">l</a></p>",
+  "error": "attribute-canonicalization-failed"
+}

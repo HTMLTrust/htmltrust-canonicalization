@@ -23,8 +23,18 @@ Without canonicalization, the same authored content produces different hashes de
 | **JavaScript** | [`javascript/`](javascript/) | None (browser + Node.js) | Browser extension, Hugo signing script |
 | **Go** | [`go/`](go/) | `golang.org/x/text` (NFKC) | Hugo module |
 | **PHP** | [`php/`](php/) | `ext-intl`, `ext-mbstring` | WordPress plugin |
+| **Python** | [`python/`](python/) | `beautifulsoup4` | Tooling, tests |
+| **Rust** | [`rust/`](rust/) | `scraper`, `unicode-normalization`, `url` | Conformance implementation |
 
 All implementations produce identical output for the same input.
+
+## Protocol Helpers
+
+The signing helpers use the legacy field name `domain`, but the value is a serialized Web origin such as `https://example.org` or `https://example.org:8443`, not a bare hostname. Helpers that build signature bindings reject host-only values.
+
+Hashes and signatures are encoded as canonical unpadded standard Base64. This is not base64url; conforming verification rejects padding, whitespace, `-`, and `_`.
+
+Canonical content includes signed semantic attribute records for `href`, `src`, `alt`, and `aria-label` across the JavaScript, Go, PHP, Python, and Rust HTML extraction helpers. Relative `href` and `src` values require the signed document base URL to canonicalize correctly.
 
 ## The 8 Phases
 

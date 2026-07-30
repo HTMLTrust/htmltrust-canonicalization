@@ -1,0 +1,7 @@
+{
+  "name": "url-relative-with-base",
+  "description": "Relative href resolves against the supplied base URL, preserving the fragment.",
+  "input": "<p><a href=\"../up#f\">l</a></p>",
+  "baseURL": "https://example.org/a/b/",
+  "expected": "@attr:a:href:https://example.org/a/up#f\nl"
+}

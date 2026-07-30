@@ -9,9 +9,7 @@
 //	go run conformance/runners/run-go.go           # verify
 //	go run conformance/runners/run-go.go --update  # rewrite `expected`
 //
-// The Go binding currently exports only `NormalizeText`; extract and
-// claims fixtures are reported as SKIP (not failures) because the
-// runner has nothing to call.
+// The Go binding covers normalize, extract, and claims fixtures.
 //
 // Build/run from the repo root, e.g.:
 //
@@ -29,6 +27,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 
 	canonicalize "github.com/HTMLTrust/htmltrust-canonicalization/go"
 )
@@ -42,6 +41,8 @@ type fixture struct {
 	Description string          `json:"description"`
 	Input       json.RawMessage `json:"input"`
 	Expected    string          `json:"expected"`
+	BaseURL     string          `json:"baseURL"`
+	Error       string          `json:"error"`
 }
 
 type result struct {
@@ -53,24 +54,32 @@ type result struct {
 // Per-suite runner: returns (output, implemented, error). `implemented`
 // is false when the binding lacks the function -- the suite is then
 // reported as SKIP.
-type runner func(raw json.RawMessage) (string, bool, error)
+type runner func(fx *fixture) (string, bool, error)
 
-func runNormalize(raw json.RawMessage) (string, bool, error) {
+func runNormalize(fx *fixture) (string, bool, error) {
 	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
+	if err := json.Unmarshal(fx.Input, &s); err != nil {
 		return "", true, fmt.Errorf("input is not a string: %w", err)
 	}
 	return canonicalize.NormalizeText(s), true, nil
 }
 
-// The Go binding does not yet implement ExtractCanonicalText.
-func runExtract(_ json.RawMessage) (string, bool, error) {
-	return "", false, nil
+func runExtract(fx *fixture) (string, bool, error) {
+	var s string
+	if err := json.Unmarshal(fx.Input, &s); err != nil {
+		return "", true, fmt.Errorf("input is not a string: %w", err)
+	}
+	out, err := canonicalize.ExtractCanonicalText(s, canonicalize.Options{BaseURL: fx.BaseURL})
+	return out, true, err
 }
 
-// The Go binding does not yet implement CanonicalizeClaims.
-func runClaims(_ json.RawMessage) (string, bool, error) {
-	return "", false, nil
+func runClaims(fx *fixture) (string, bool, error) {
+	var claims map[string]string
+	if err := json.Unmarshal(fx.Input, &claims); err != nil {
+		return "", true, fmt.Errorf("input is not a string map: %w", err)
+	}
+	out, err := canonicalize.CanonicalizeClaimsStrict(claims)
+	return out, true, err
 }
 
 func main() {
@@ -119,10 +128,30 @@ func main() {
 				continue
 			}
 
-			actual, implemented, err := r(fx.Input)
+			actual, implemented, err := r(fx)
 			if err != nil {
+				if fx.Error != "" {
+					if strings.Contains(err.Error(), fx.Error) {
+						passed++
+						fmt.Printf("PASS %s  (expected error %s)\n", id, fx.Error)
+					} else {
+						failed++
+						msg := fmt.Sprintf("FAIL %s\n  expected error: %s\n  got error:      %v", id, fx.Error, err)
+						results = append(results, result{id, "FAIL", msg})
+						fmt.Println(msg)
+					}
+					continue
+				}
 				failed++
 				msg := fmt.Sprintf("FAIL %s\n  threw: %v", id, err)
+				results = append(results, result{id, "FAIL", msg})
+				fmt.Println(msg)
+				continue
+			}
+
+			if fx.Error != "" {
+				failed++
+				msg := fmt.Sprintf("FAIL %s\n  expected error: %s\n  got output:     %q", id, fx.Error, actual)
 				results = append(results, result{id, "FAIL", msg})
 				fmt.Println(msg)
 				continue

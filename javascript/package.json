@@ -1,6 +1,6 @@
 {
   "name": "@htmltrust/canonicalization",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "HTMLTrust canonical text normalization, signature verification, and keyid resolution \u2014 zero dependencies, browser + Node.js",
   "type": "module",
   "main": "index.js",

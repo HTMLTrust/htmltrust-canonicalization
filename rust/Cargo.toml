@@ -18,6 +18,7 @@ path = "src/lib.rs"
 unicode-normalization = "0.1"
 scraper = "0.20"
 ego-tree = "0.6"
+url = "2"
 
 [dev-dependencies]
 # pure stdlib tests; nothing extra required.

@@ -4,5 +4,5 @@
   "input": {
     "author": "“Alice”"
   },
-  "expected": "author=\"Alice\""
+  "expected": "author:\"Alice\"\n"
 }

@@ -75,7 +75,7 @@ const NORMALIZATION_CASES: &[Case] = &[
     ),
     (
         "\u{201A}German\u{201C}",
-        "\"German\"",
+        "'German\"",
         true,
         "Low-9 quotes -> straight",
     ),
@@ -129,7 +129,7 @@ fn extract_inline_no_separator() {
 
 #[test]
 fn extract_block_boundary_inserts_space() {
-    assert_eq!(extract_canonical_text("<p>A</p><p>B</p>"), "A B");
+    assert_eq!(extract_canonical_text("<p>A</p><p>B</p>"), "A\nB");
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn extract_excluded_elements_removed() {
 <style>.x{color:red}</style>\
 <meta name=\"claim:License\" content=\"CC-BY-4.0\">\
 <p>after</p>";
-    assert_eq!(extract_canonical_text(html), "before after");
+    assert_eq!(extract_canonical_text(html), "before\nafter");
 }
 
 #[test]
@@ -163,23 +163,40 @@ fn extract_normalization_pipeline_applied() {
 fn extract_nested_blocks() {
     let html = "<article><header><h1>Title</h1></header>\
 <section><p>Para one.</p><p>Para two.</p></section></article>";
-    assert_eq!(extract_canonical_text(html), "Title Para one. Para two.");
+    assert_eq!(extract_canonical_text(html), "Title\nPara one.\nPara two.");
 }
 
 #[test]
 fn extract_list_items_separated() {
     assert_eq!(
         extract_canonical_text("<ul><li>a</li><li>b</li><li>c</li></ul>"),
-        "a b c",
+        "a\nb\nc",
     );
 }
 
 #[test]
 fn extract_inline_link_no_separator() {
+    // Anchor tags are inline: no separator. With a base URL the relative href
+    // resolves and emits a signed-attribute record (draft §4.3.2).
     assert_eq!(
-        extract_canonical_text("<p>see <a href=\"x\">here</a> now</p>"),
-        "see here now",
+        htmltrust_canonicalization::try_extract_canonical_text_with_base_url(
+            "<p>see <a href=\"x\">here</a> now</p>",
+            Some("https://example.org/"),
+        )
+        .unwrap(),
+        "see @attr:a:href:https://example.org/x\nhere now",
     );
+}
+
+#[test]
+fn extract_relative_url_no_base_fails() {
+    // A relative href with no base URL MUST fail rather than silently skip.
+    let err = htmltrust_canonicalization::try_extract_canonical_text_with_base_url(
+        "<p>see <a href=\"x\">here</a> now</p>",
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("attribute-canonicalization-failed"));
 }
 
 #[test]
@@ -196,7 +213,7 @@ fn claims_sorted_by_name() {
     claims.insert("ContentType".to_string(), "Article".to_string());
     assert_eq!(
         canonicalize_claims(&claims),
-        "AIAssistance=None\nContentType=Article\nLicense=CC-BY-4.0",
+        "AIAssistance:None\nContentType:Article\nLicense:CC-BY-4.0\n",
     );
 }
 
@@ -204,5 +221,5 @@ fn claims_sorted_by_name() {
 fn claims_normalize_values() {
     let mut claims = BTreeMap::new();
     claims.insert("author".to_string(), "\u{201C}Alice\u{201D}".to_string());
-    assert_eq!(canonicalize_claims(&claims), "author=\"Alice\"");
+    assert_eq!(canonicalize_claims(&claims), "author:\"Alice\"\n");
 }

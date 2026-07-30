@@ -1,0 +1,6 @@
+{
+  "name": "signed-semantic-attributes",
+  "description": "Signed href, src, alt, and aria-label attributes are emitted as attribute records in document order.",
+  "input": "<p><a href=\"https://example.org/story?a=1&amp;b=2\" aria-label=\"Read “more”\">link</a><img src=\"https://example.org/img.png\" alt=\"Hero — image\"></p>",
+  "expected": "@attr:a:href:https://example.org/story?a=1&b=2\n@attr:a:aria-label:Read \"more\"\nlink\n@attr:img:src:https://example.org/img.png\n@attr:img:alt:Hero - image"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "url-idn-punycode",
+  "description": "IDN host in href is serialized as punycode (xn--...), matching the WHATWG URL serializer.",
+  "input": "<p><a href=\"https://例え.example/a/../x#frag\">l</a></p>",
+  "expected": "@attr:a:href:https://xn--r8jz45g.example/x#frag\nl"
+}

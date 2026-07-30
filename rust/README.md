@@ -13,7 +13,7 @@ Out of scope for this crate: signature verification and key resolution. Those wi
 This crate provides three functions:
 
 1. **`normalize_text(text: &str, preserve_whitespace: bool) -> String`** -- applies the 8-phase canonicalization defined in [`../spec.md`](../spec.md) to a UTF-8 string.
-2. **`extract_canonical_text(html: &str) -> String`** -- parses an HTML fragment with `scraper` (html5ever), walks the DOM, emits text nodes in document order with single-space separators between block elements, and applies `normalize_text` to the result.
+2. **`extract_canonical_text(html: &str) -> String`** -- parses an HTML fragment with `scraper` (html5ever), walks the DOM, emits text nodes and signed semantic attributes in document order, and applies `normalize_text` to text/attribute values. Use `extract_canonical_text_with_base_url` when relative `href` or `src` values need resolution.
 3. **`canonicalize_claims(claims: &BTreeMap<String, String>) -> String`** -- serializes a claim map to the canonical, hashable string used by the `claims-hash` field of the signature binding.
 
 All three are pure functions: no I/O, deterministic output for the same input.
@@ -23,6 +23,7 @@ All three are pure functions: no I/O, deterministic output for the same input.
 - `unicode-normalization` for NFKC
 - `scraper` (html5ever-backed) for HTML parsing in `extract_canonical_text`
 - `ego-tree` for the DOM walk types re-exported by scraper
+- `url` for Web URL parsing of signed semantic `href` and `src` attributes
 
 ## Conformance
 
@@ -53,7 +54,7 @@ let mut claims = BTreeMap::new();
 claims.insert("License".to_string(), "CC-BY-4.0".to_string());
 claims.insert("AIAssistance".to_string(), "None".to_string());
 let claims_str = canonicalize_claims(&claims);
-// -> "AIAssistance=None\nLicense=CC-BY-4.0"
+// -> "AIAssistance:None\nLicense:CC-BY-4.0\n"
 ```
 
 ## Tests

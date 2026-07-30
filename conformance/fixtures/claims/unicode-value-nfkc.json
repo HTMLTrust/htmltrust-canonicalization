@@ -4,5 +4,5 @@
   "input": {
     "version": "１．０"
   },
-  "expected": "version=1.0"
+  "expected": "version:1.0\n"
 }

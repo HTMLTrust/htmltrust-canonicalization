@@ -1,6 +1,6 @@
 {
   "name": "table-cells-separated",
-  "description": "Table rows and cells are block elements -- cells separate with a single space.",
+  "description": "Table rows and cells are boundary-producing elements -- cells separate with line feeds.",
   "input": "<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>",
-  "expected": "a b c d"
+  "expected": "a\nb\nc\nd"
 }

@@ -1,0 +1,6 @@
+{
+  "name": "iframe-excluded",
+  "description": "An <iframe> subtree contributes no bytes and emits no @attr:iframe:src record.",
+  "input": "<p>a<iframe src=\"https://evil.example/x\">SMUGGLED</iframe>b</p>",
+  "expected": "ab"
+}

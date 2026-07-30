@@ -1,0 +1,26 @@
+{
+  "description": "HTMLTrust end-to-end test vector 01 (Ed25519). Every signer and verifier MUST reproduce contentHash, claimsHash, signingPayload and signature exactly.",
+  "algorithm": "ed25519",
+  "key": {
+    "seedHex": "68746d6c74727573742d746573742d766563746f722d656432353531392d3031",
+    "publicKeyRawHex": "ae8e474e7921dd51be650dcf6847ab452dee63421339efc3d6b041b2e85f4c19",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----\n"
+  },
+  "input": {
+    "html": "<signed-section><meta name=\"author\" content=\"Ada Lovelace\"><meta name=\"signed-at\" content=\"2026-01-15T12:00:00Z\"><meta name=\"license\" content=\"CC-BY-4.0\"><h1>On Analytical Engines</h1><p>The engine weaves algebraic patterns &mdash; just as the loom weaves flowers.</p><p>See <a href=\"/notes/engine\">the notes</a> and <img src=\"/img/ada.png\" alt=\"Portrait of Ada\">.</p></signed-section>",
+    "baseURL": "https://example.com/essays/engines",
+    "domain": "https://example.com",
+    "signedAt": "2026-01-15T12:00:00Z"
+  },
+  "canonicalContent": "On Analytical Engines\nThe engine weaves algebraic patterns - just as the loom weaves flowers.\nSee @attr:a:href:https://example.com/notes/engine\nthe notes and @attr:img:src:https://example.com/img/ada.png\n@attr:img:alt:Portrait of Ada\n.",
+  "contentHash": "sha256:IVAwpRTDujszmYf76W497alVTtxGCgtJtQlasiFSCM8",
+  "claims": {
+    "author": "Ada Lovelace",
+    "signed-at": "2026-01-15T12:00:00Z",
+    "license": "CC-BY-4.0"
+  },
+  "canonicalClaims": "author:Ada Lovelace\nlicense:CC-BY-4.0\nsigned-at:2026-01-15T12:00:00Z\n",
+  "claimsHash": "sha256:LRDw8hP30g9AxXzw8wteFOZpDyD/hWUyP25Be8C0hBs",
+  "signingPayload": "sha256:IVAwpRTDujszmYf76W497alVTtxGCgtJtQlasiFSCM8:sha256:LRDw8hP30g9AxXzw8wteFOZpDyD/hWUyP25Be8C0hBs:https://example.com:2026-01-15T12:00:00Z",
+  "signature": "kivLG5v5apFvXL4R7glxzg6zqpAt9r7gbiKRK3EA0W3wLePdn/Jde2lIdD1a78TdsaxZyRgDF/6u/goO6NcKDg"
+}

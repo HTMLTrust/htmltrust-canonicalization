@@ -43,7 +43,7 @@ def run_normalize(fixture: dict) -> str:
 
 
 def run_extract(fixture: dict) -> str:
-    return extract_canonical_text(fixture["input"])
+    return extract_canonical_text(fixture["input"], base_url=fixture.get("baseURL"))
 
 
 def run_claims(fixture: dict) -> str:
@@ -96,12 +96,39 @@ def main() -> int:
         for path in list_fixtures(suite):
             fixture = load(path)
             ident = rel(path)
+            expect_error = fixture.get("error")
             try:
                 actual = runner(fixture)
             except Exception as exc:
+                emsg = str(exc)
+                if expect_error:
+                    if expect_error in emsg:
+                        passed += 1
+                        print(f"PASS {ident}  (expected error {expect_error})")
+                    else:
+                        failed += 1
+                        msg = (
+                            f"FAIL {ident}\n"
+                            f"  expected error: {expect_error}\n"
+                            f"  got error:      {emsg}"
+                        )
+                        failures.append(msg)
+                        print(msg)
+                    continue
                 failed += 1
                 tb = "".join(traceback.format_exception_only(type(exc), exc)).strip()
                 msg = f"FAIL {ident}\n  threw: {tb}"
+                failures.append(msg)
+                print(msg)
+                continue
+
+            if expect_error:
+                failed += 1
+                msg = (
+                    f"FAIL {ident}\n"
+                    f"  expected error: {expect_error}\n"
+                    f"  got output:     {json.dumps(actual, ensure_ascii=False)}"
+                )
                 failures.append(msg)
                 print(msg)
                 continue

@@ -1,5 +1,9 @@
 import {
   normalizeText,
+  extractCanonicalText,
+  canonicalizeClaims,
+  extractClaimsFromSignedSection,
+  decodeCanonicalBase64,
   buildSignatureBinding,
   buildEndorsementBinding,
   verifySignature,
@@ -8,9 +12,13 @@ import {
   trustDirectoryResolver,
   resolveKey,
   verifyEndorsement,
+  isKeyRevoked,
 } from './index.js';
+import * as nodeCrypto from 'node:crypto';
 import { generateKeyPairSync, sign as nodeSign, createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+import { encodeBase64Unpadded } from './index.js';
 
 const tests = [
   // [inputA, inputB, shouldMatch, description]
@@ -28,7 +36,7 @@ const tests = [
   ['word\u200Cword', 'wordword', false, 'ZWNJ preserved (different)'],
   ['Hello\u2026', 'Hello...', true, 'Ellipsis → three dots'],
   ['\u2018Hello\u2019', "'Hello'", true, 'Curly single quotes → straight'],
-  ['\u201AGerman\u201C', '"German"', true, 'Low-9 quotes → straight'],
+  ['\u201AGerman\u201C', '\'German"', true, 'Low-9 quotes → straight'],
   ['a\u00A0b', 'a b', true, 'No-break space → space'],
   ['a\u3000b', 'a b', true, 'Ideographic space → space'],
   ['a  \t  b', 'a b', true, 'Whitespace collapse'],
@@ -81,10 +89,78 @@ await check('buildSignatureBinding produces colon-joined string', () => {
   const s = buildSignatureBinding({
     contentHash: 'sha256:AAA',
     claimsHash: 'sha256:BBB',
-    domain: 'example.org',
+    domain: 'https://example.org',
     signedAt: '2026-04-28T00:00:00Z',
   });
-  assertEq(s, 'sha256:AAA:sha256:BBB:example.org:2026-04-28T00:00:00Z');
+  assertEq(s, 'sha256:AAA:sha256:BBB:https://example.org:2026-04-28T00:00:00Z');
+});
+
+await check('buildSignatureBinding rejects bare hostname domain field', () => {
+  let threw = false;
+  try {
+    buildSignatureBinding({
+      contentHash: 'sha256:AAA',
+      claimsHash: 'sha256:BBB',
+      domain: 'example.org',
+      signedAt: '2026-04-28T00:00:00Z',
+    });
+  } catch {
+    threw = true;
+  }
+  assert(threw, 'expected bare hostname to be rejected');
+});
+
+await check('canonicalizeClaims uses colon lines and signs author/signed-at', () => {
+  const out = canonicalizeClaims({
+    'signed-at': '2026-05-01T10:30:00Z',
+    author: 'Alice Example',
+    'claim:License': 'CC-BY-4.0',
+  });
+  assertEq(out, 'author:Alice Example\nclaim:License:CC-BY-4.0\nsigned-at:2026-05-01T10:30:00Z\n');
+});
+
+await check('extractClaimsFromSignedSection includes all direct child meta only', () => {
+  const claims = extractClaimsFromSignedSection(`
+    <signed-section>
+      <meta name="author" content="Alice">
+      <meta name="signed-at" content="2026-05-01T10:30:00Z">
+      <div><meta name="author" content="Nested"></div>
+    </signed-section>
+  `);
+  assertEq(claims.author, 'Alice');
+  assertEq(claims['signed-at'], '2026-05-01T10:30:00Z');
+  assert(!('Nested' in claims), 'nested meta must not be extracted');
+});
+
+await check('extractClaimsFromSignedSection rejects duplicate normalized names', () => {
+  let threw = false;
+  try {
+    extractClaimsFromSignedSection('<meta name="author" content="A"><meta name="author" content="B">');
+  } catch {
+    threw = true;
+  }
+  assert(threw, 'expected duplicate direct child meta names to fail');
+});
+
+await check('extractCanonicalText signs href/src/alt/aria-label attributes', () => {
+  const out = extractCanonicalText(
+    '<p><a href="/story?a=1&amp;b=2" aria-label="Read “more”">link</a><img src="img.png" alt="Hero — image"></p>',
+    { baseUrl: 'https://example.org/base/page.html' },
+  );
+  assertEq(
+    out,
+    '@attr:a:href:https://example.org/story?a=1&b=2\n@attr:a:aria-label:Read "more"\nlink\n@attr:img:src:https://example.org/base/img.png\n@attr:img:alt:Hero - image',
+  );
+});
+
+await check('decodeCanonicalBase64 rejects padded and base64url forms', () => {
+  assertEq(new TextDecoder().decode(decodeCanonicalBase64('Zm9v')), 'foo');
+  let padded = false;
+  try { decodeCanonicalBase64('Zm9v='); } catch { padded = true; }
+  assert(padded, 'expected padded base64 to be rejected');
+  let url = false;
+  try { decodeCanonicalBase64('ab-c'); } catch { url = true; }
+  assert(url, 'expected base64url to be rejected');
 });
 
 await check('buildSignatureBinding throws on missing field', () => {
@@ -100,7 +176,7 @@ await check('buildSignatureBinding throws on missing field', () => {
 await check('verifySignature ed25519 round-trip', async () => {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const message = 'hello world';
-  const sig = nodeSign(null, Buffer.from(message), privateKey).toString('base64');
+  const sig = nodeSign(null, Buffer.from(message), privateKey).toString('base64').replace(/=+$/, '');
   const pem = publicKey.export({ type: 'spki', format: 'pem' });
   const ok = await verifySignature(message, sig, pem, 'ed25519');
   assert(ok, 'expected ed25519 signature to verify');
@@ -114,7 +190,7 @@ await check('verifySignature rsa round-trip', async () => {
   const { createSign } = await import('node:crypto');
   const signer = createSign('SHA256');
   signer.update('hello rsa');
-  const sig = signer.sign(privateKey, 'base64');
+  const sig = signer.sign(privateKey, 'base64').replace(/=+$/, '');
   const pem = publicKey.export({ type: 'spki', format: 'pem' });
   const ok = await verifySignature('hello rsa', sig, pem, 'rsa');
   assert(ok, 'expected rsa signature to verify');
@@ -126,6 +202,101 @@ await check('verifySignature handles unpadded base64', async () => {
   const pem = publicKey.export({ type: 'spki', format: 'pem' });
   const ok = await verifySignature('msg', sig, pem, 'ED25519');
   assert(ok, 'unpadded base64 should still verify');
+});
+
+await check('verifySignature rejects padded base64', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const sig = nodeSign(null, Buffer.from('msg'), privateKey).toString('base64');
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  const ok = await verifySignature('msg', sig, pem, 'ed25519');
+  assert(!ok, 'padded base64 should not verify in conforming mode');
+});
+
+// ---- Algorithm registry (spec §7.1) ----
+
+function signEcdsa(privateKey, message, hash) {
+  const { createSign } = nodeCrypto;
+  const signer = createSign(hash);
+  signer.update(message);
+  return signer.sign(privateKey, 'base64').replace(/=+$/, '');
+}
+
+await check('verifySignature ecdsa-p256 round-trip', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  const sig = signEcdsa(privateKey, 'hello p256', 'SHA256');
+  assert(await verifySignature('hello p256', sig, pem, 'ecdsa-p256'), 'p256 should verify');
+});
+
+await check('verifySignature ecdsa-p384 round-trip', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'secp384r1' });
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  const sig = signEcdsa(privateKey, 'hello p384', 'SHA384');
+  assert(await verifySignature('hello p384', sig, pem, 'ecdsa-p384'), 'p384 should verify');
+});
+
+await check('verifySignature pins the ECDSA curve to the declared algorithm', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'secp384r1' });
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  const sig = signEcdsa(privateKey, 'curve confusion', 'SHA384');
+  const ok = await verifySignature('curve confusion', sig, pem, 'ecdsa-p256');
+  assert(!ok, 'a P-384 key must not satisfy an ecdsa-p256 signature');
+});
+
+await check('verifySignature rsa-pss-sha256 round-trip', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  const sig = nodeCrypto
+    .sign('sha256', Buffer.from('hello pss'), {
+      key: privateKey,
+      padding: nodeCrypto.constants.RSA_PKCS1_PSS_PADDING,
+      saltLength: 32,
+    })
+    .toString('base64')
+    .replace(/=+$/, '');
+  assert(await verifySignature('hello pss', sig, pem, 'rsa-pss-sha256'), 'PSS should verify');
+});
+
+await check('verifySignature separates PSS from PKCS#1 v1.5', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  const pkcs1 = nodeCrypto
+    .sign('RSA-SHA256', Buffer.from('padding matters'), privateKey)
+    .toString('base64')
+    .replace(/=+$/, '');
+  assert(
+    await verifySignature('padding matters', pkcs1, pem, 'rsa-pkcs1-sha256'),
+    'PKCS#1 v1.5 should verify under its own identifier',
+  );
+  assert(
+    !(await verifySignature('padding matters', pkcs1, pem, 'rsa-pss-sha256')),
+    'a PKCS#1 v1.5 signature must not verify as PSS',
+  );
+});
+
+await check('verifySignature rejects a key of the wrong type for the algorithm', async () => {
+  const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  assert(!(await verifySignature('msg', 'abcd', pem, 'ed25519')), 'RSA key is not an ed25519 key');
+  assert(!(await verifySignature('msg', 'abcd', pem, 'ecdsa-p256')), 'RSA key is not an EC key');
+});
+
+await check('verifySignature rejects an unregistered algorithm', async () => {
+  const { publicKey } = generateKeyPairSync('ed25519');
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  assert(!(await verifySignature('msg', 'abcd', pem, 'ecdsa-p521')), 'unknown algorithm fails closed');
+});
+
+// ---- Key revocation and expiry (spec §8.2) ----
+
+await check('isKeyRevoked honors revoked and expires', () => {
+  assert(isKeyRevoked({ revoked: true }), 'revoked: true is revoked');
+  assert(isKeyRevoked({ expires: '2020-01-01T00:00:00Z' }), 'past expiry is revoked');
+  assert(isKeyRevoked({ expires: 'nonsense' }), 'unparseable expiry fails closed');
+  assert(!isKeyRevoked({ expires: '2999-01-01T00:00:00Z' }), 'future expiry is live');
+  assert(!isKeyRevoked({ revoked: false }), 'revoked: false is live');
+  assert(!isKeyRevoked({}), 'a key document with neither field is live');
+  assert(!isKeyRevoked(null), 'no key is not a revoked key');
 });
 
 // ---- Resolver tests with a local HTTP fixture ----
@@ -218,8 +389,6 @@ await check('verifyEndorsement round-trip with direct-URL resolver', async () =>
     timestamp: '2026-04-28T12:00:00Z',
     algorithm: 'ed25519',
   };
-  const binding = buildEndorsementBinding(endorsement);
-  endorsement.signature = nodeSign(null, Buffer.from(binding), ePriv).toString('base64');
 
   // Replace fixture key for the duration of this test by swapping the route
   // via a fresh server (avoids mutating shared state).
@@ -228,8 +397,8 @@ await check('verifyEndorsement round-trip with direct-URL resolver', async () =>
   });
   const localPort = localFixture.address().port;
   endorsement.endorser = `http://127.0.0.1:${localPort}/key.json`;
-  // Re-sign with the corrected endorser keyid (binding doesn't include keyid
-  // so the existing signature still verifies).
+  const binding = buildEndorsementBinding(endorsement);
+  endorsement.signature = nodeSign(null, Buffer.from(binding), ePriv).toString('base64').replace(/=+$/, '');
   const ok = await verifyEndorsement(endorsement, [directUrlResolver()]);
   await new Promise((r) => localFixture.close(r));
   assert(ok, 'expected endorsement to verify');
@@ -252,11 +421,38 @@ await check('verifyEndorsement fails on tampered hash', async () => {
     null,
     Buffer.from(buildEndorsementBinding(endorsement)),
     ePriv,
-  ).toString('base64');
+  ).toString('base64').replace(/=+$/, '');
   endorsement.endorsement = 'sha256:tampered';
   const ok = await verifyEndorsement(endorsement, [directUrlResolver()]);
   await new Promise((r) => localFixture.close(r));
   assert(!ok, 'tampered endorsement must not verify');
+});
+
+await check('end-to-end test vector reproduces hashes, payload, and signature', async () => {
+  const v = JSON.parse(
+    readFileSync(new URL('../conformance/vectors/vector-01.json', import.meta.url), 'utf8'),
+  );
+  const sha = (s) =>
+    'sha256:' + encodeBase64Unpadded(createHash('sha256').update(Buffer.from(s, 'utf8')).digest());
+  const content = extractCanonicalText(v.input.html, { baseUrl: v.input.baseURL });
+  const claims = canonicalizeClaims(extractClaimsFromSignedSection(v.input.html));
+  const contentHash = sha(content);
+  const claimsHash = sha(claims);
+  const payload = buildSignatureBinding({
+    contentHash,
+    claimsHash,
+    domain: v.input.domain,
+    signedAt: v.input.signedAt,
+  });
+  assertEq(content, v.canonicalContent, 'canonicalContent');
+  assertEq(contentHash, v.contentHash, 'contentHash');
+  assertEq(claims, v.canonicalClaims, 'canonicalClaims');
+  assertEq(claimsHash, v.claimsHash, 'claimsHash');
+  assertEq(payload, v.signingPayload, 'signingPayload');
+  assert(
+    await verifySignature(payload, v.signature, v.key.publicKeyPem, v.algorithm),
+    'vector signature must verify',
+  );
 });
 
 await new Promise((r) => fixtureServer.close(r));

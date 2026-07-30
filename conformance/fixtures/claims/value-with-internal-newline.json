@@ -4,5 +4,5 @@
   "input": {
     "summary": "line one\nline two"
   },
-  "expected": "summary=line one line two"
+  "expected": "summary:line one line two\n"
 }

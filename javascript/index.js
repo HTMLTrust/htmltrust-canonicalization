@@ -5,6 +5,8 @@
  * Zero dependencies. Works in browsers and Node.js.
  */
 
+import { NAMED_ENTITIES } from "./entities.js";
+
 // Phase 6: Invisible/formatting characters to strip
 const STRIP_RE = new RegExp(
   [
@@ -35,9 +37,9 @@ const WHITESPACE_RE =
   /[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/g;
 
 // Phase 3: Quotation mark normalization
-const SINGLE_QUOTE_RE = /[\u2018\u2019\u201B\u2039\u203A\u0060\u00B4\u2032]/g;
+const SINGLE_QUOTE_RE = /[\u2018\u2019\u201A\u201B\u2039\u203A\u0060\u00B4\u2032]/g;
 const DOUBLE_QUOTE_RE =
-  /[\u201A\u201C\u201D\u201E\u201F\u00AB\u00BB\u2033\u301D\u301E\u301F]/g;
+  /[\u201C\u201D\u201E\u201F\u00AB\u00BB\u2033\u301D\u301E\u301F]/g;
 const CJK_QUOTE_RE = /[\u300C\u300D\u300E\u300F\uFE41-\uFE44]/g;
 
 // Phase 4: Dashes → U+002D (includes minus sign from Phase 5)
@@ -111,52 +113,128 @@ const EXCLUDED_ELEMENTS_RE =
 // Self-closing and void elements (no text content) to strip.
 const VOID_ELEMENTS_RE = /<(meta|link|br|hr|img|input|source|track|wbr|area|base|col|embed|param)\b[^>]*\/?>/gi;
 
-// Block-level elements whose boundaries should become whitespace separators.
+// Boundary-producing elements from the protocol draft. A boundary-producing
+// element emits a line feed after its descendants have contributed text.
 // Inline elements (em, strong, a, span, etc.) do NOT get separators, so
-// "<p>hello <em>world</em></p>" canonicalizes to "hello world" not "hello world ".
+// "<p>hello <em>world</em></p>" canonicalizes to "hello world".
 const BLOCK_ELEMENTS =
-  "address|article|aside|blockquote|canvas|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|li|main|nav|noscript|ol|output|p|pre|section|table|tfoot|thead|tr|td|th|ul|video";
-const BLOCK_OPEN_RE = new RegExp(`<(${BLOCK_ELEMENTS})\\b[^>]*>`, "gi");
-const BLOCK_CLOSE_RE = new RegExp(`</(${BLOCK_ELEMENTS})\\s*>`, "gi");
+  "address|article|aside|blockquote|details|dialog|div|dl|fieldset|figcaption|figure|footer|form|h[1-6]|header|hgroup|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul";
 
 // Any remaining HTML tag (inline elements we strip without adding whitespace).
 const ANY_TAG_RE = /<\/?[a-z][a-z0-9-]*\b[^>]*>/gi;
+const HTML_TOKEN_RE = /<!--[\s\S]*?-->|<![^>]*>|<\/?[a-z][a-z0-9-]*(?:\s[^<>]*)?\s*\/?>/gi;
+const TAG_NAME_RE = /^<\/?\s*([a-z][a-z0-9-]*)/i;
+const SIGNED_ATTRS = ["href", "src", "alt", "aria-label"];
+const VOID_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+const EXCLUDED_TAGS = new Set(["script", "style", "template", "noscript", "iframe", "head", "meta", "link"]);
 
-// HTML entity decoding table (common entities; numeric entities handled separately).
-const NAMED_ENTITIES = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&apos;": "'",
-  "&nbsp;": "\u00A0",
-  "&ndash;": "\u2013",
-  "&mdash;": "\u2014",
-  "&lsquo;": "\u2018",
-  "&rsquo;": "\u2019",
-  "&ldquo;": "\u201C",
-  "&rdquo;": "\u201D",
-  "&hellip;": "\u2026",
-  "&copy;": "\u00A9",
-  "&reg;": "\u00AE",
-  "&trade;": "\u2122",
+// Full HTML5 named-entity table lives in ./entities.js (generated).
+// Lookups are case-sensitive per the HTML Living Standard.
+
+// windows-1252 mapping for numeric references in the C1 range (0x80-0x9F),
+// per the HTML5 "numeric character reference end" state.
+const C1_REPLACEMENTS = {
+  0x80: 0x20ac, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e, 0x85: 0x2026,
+  0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02c6, 0x89: 0x2030, 0x8a: 0x0160,
+  0x8b: 0x2039, 0x8c: 0x0152, 0x8e: 0x017d, 0x91: 0x2018, 0x92: 0x2019,
+  0x93: 0x201c, 0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
+  0x98: 0x02dc, 0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a, 0x9c: 0x0153,
+  0x9e: 0x017e, 0x9f: 0x0178,
 };
 
+function numericCharRef(n) {
+  if (n === 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) return "\uFFFD";
+  if (Object.prototype.hasOwnProperty.call(C1_REPLACEMENTS, n)) {
+    return String.fromCodePoint(C1_REPLACEMENTS[n]);
+  }
+  return String.fromCodePoint(n);
+}
+
 function decodeEntities(text) {
-  // Named entities
-  text = text.replace(/&[a-z]+;/gi, (match) => {
-    const key = match.toLowerCase();
-    return NAMED_ENTITIES[key] ?? match;
-  });
-  // Numeric decimal entities
-  text = text.replace(/&#(\d+);/g, (_, code) =>
-    String.fromCodePoint(parseInt(code, 10)),
+  // Named references (case-sensitive, semicolon-terminated).
+  text = text.replace(/&[a-zA-Z][a-zA-Z0-9]*;/g, (match) =>
+    Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, match)
+      ? NAMED_ENTITIES[match]
+      : match,
   );
-  // Numeric hex entities
-  text = text.replace(/&#x([0-9a-f]+);/gi, (_, code) =>
-    String.fromCodePoint(parseInt(code, 16)),
+  // Numeric decimal references.
+  text = text.replace(/&#([0-9]+);/g, (_, code) => numericCharRef(parseInt(code, 10)));
+  // Numeric hex references.
+  text = text.replace(/&#[xX]([0-9a-fA-F]+);/g, (_, code) =>
+    numericCharRef(parseInt(code, 16)),
   );
   return text;
+}
+function parseAttributes(tag) {
+  const attrs = new Map();
+  const body = tag.replace(/^<\/?\s*[a-z][a-z0-9-]*/i, "").replace(/\/?\s*>$/, "");
+  const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let match;
+  while ((match = attrRe.exec(body))) {
+    const name = match[1].toLowerCase();
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    attrs.set(name, decodeEntities(value));
+  }
+  return attrs;
+}
+
+function appendPart(parts, value) {
+  if (!value) return;
+  parts.push(value);
+}
+
+function appendAttributeRecords(parts, elementName, attrs, baseUrl) {
+  for (const attrName of SIGNED_ATTRS) {
+    if (!attrs.has(attrName)) continue;
+    let value = attrs.get(attrName);
+    if (attrName === "href" || attrName === "src") {
+      if (!baseUrl && !/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+        // Relative URL with no base cannot be resolved. The draft (§4.3.2)
+        // requires a hard failure rather than a silent skip.
+        throw new Error(
+          `attribute-canonicalization-failed: ${elementName}.${attrName}`,
+        );
+      }
+      try {
+        // `null` base coerces to the invalid string "null"; pass undefined so
+        // an absolute URL is accepted without a base.
+        value = new URL(value, baseUrl || undefined).href;
+      } catch (err) {
+        throw new Error(`attribute-canonicalization-failed: ${elementName}.${attrName}`);
+      }
+    } else {
+      value = normalizeText(value).trim();
+    }
+    if (value.includes("\n")) {
+      throw new Error(`attribute-canonicalization-failed: ${elementName}.${attrName}`);
+    }
+    const prefix = parts.length && !/[\s\n]$/.test(parts[parts.length - 1]) ? "\n" : "";
+    parts.push(`${prefix}@attr:${elementName}:${attrName}:${value}\n`);
+  }
+}
+
+function finalizeCanonicalParts(parts) {
+  return parts
+    .join("")
+    .replace(/ {2,}/g, " ")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
 }
 
 /**
@@ -169,16 +247,13 @@ function decodeEntities(text) {
  *   1. Strips excluded elements (script, style, meta, link, head, noscript)
  *      and their contents. `<meta>` is excluded because inside a signed-section
  *      it carries claim metadata, not signed content.
- *   2. Converts block-element boundaries to single spaces so that
- *      `<p>A</p><p>B</p>` canonicalizes to `A B`, not `AB`.
- *   3. Strips all remaining inline markup, preserving only text content.
- *   4. Decodes HTML entities.
- *   5. Applies the full text normalization pipeline (`normalizeText`).
- *
- * The output is a pure text string. Markup, attributes, link destinations,
- * and media sources are NOT covered by the hash. This is a deliberate
- * scoping choice (see spec §2.1 "Text-only scope" and the open design
- * question on attribute coverage).
+ *   2. Emits signed semantic attribute records for href, src, alt, and
+ *      aria-label.
+ *   3. Converts boundary-producing elements and br to line feeds so that
+ *      `<p>A</p><p>B</p>` canonicalizes to `A\nB`, not `AB`.
+ *   4. Strips remaining inline markup while preserving text content.
+ *   5. Decodes HTML entities.
+ *   6. Applies the full text normalization pipeline (`normalizeText`).
  *
  * This implementation is regex-based and is sufficient for signed content
  * as typically produced by CMS platforms (blog posts, articles, news
@@ -194,28 +269,56 @@ export function extractCanonicalText(html, options = {}) {
     throw new TypeError("extractCanonicalText expects a string");
   }
 
-  // Step 1: Strip excluded elements and their contents.
-  let text = html.replace(EXCLUDED_ELEMENTS_RE, " ");
-  text = text.replace(VOID_ELEMENTS_RE, " ");
+  const parts = [];
+  const baseUrl = options.baseUrl;
+  let index = 0;
+  let excludedDepth = 0;
+  let match;
+  HTML_TOKEN_RE.lastIndex = 0;
+  while ((match = HTML_TOKEN_RE.exec(html))) {
+    if (match.index > index && excludedDepth === 0) {
+      appendPart(parts, normalizeText(decodeEntities(html.slice(index, match.index)), options));
+    }
+    index = HTML_TOKEN_RE.lastIndex;
 
-  // Step 2: Convert block boundaries to whitespace.
-  text = text.replace(BLOCK_OPEN_RE, " ");
-  text = text.replace(BLOCK_CLOSE_RE, " ");
+    const token = match[0];
+    const nameMatch = TAG_NAME_RE.exec(token);
+    if (!nameMatch) continue;
+    const name = nameMatch[1].toLowerCase();
+    const closing = /^<\//.test(token);
+    const selfClosing = /\/\s*>$/.test(token) || VOID_TAGS.has(name);
+    const excluded = EXCLUDED_TAGS.has(name);
 
-  // Step 3: Strip all remaining (inline) tags.
-  text = text.replace(ANY_TAG_RE, "");
+    if (closing) {
+      if (excluded && excludedDepth > 0) {
+        excludedDepth--;
+        continue;
+      }
+      if (excludedDepth > 0) continue;
+      if (new RegExp(`^(${BLOCK_ELEMENTS})$`, "i").test(name)) appendPart(parts, "\n");
+      continue;
+    }
 
-  // Step 4: Decode HTML entities.
-  text = decodeEntities(text);
+    if (excluded) {
+      if (!selfClosing) excludedDepth++;
+      continue;
+    }
+    if (excludedDepth > 0) continue;
 
-  // Step 5: Apply full canonicalization pipeline.
-  return normalizeText(text, options).trim();
+    appendAttributeRecords(parts, name, parseAttributes(token), baseUrl);
+    if (name === "br") appendPart(parts, "\n");
+    if (selfClosing && new RegExp(`^(${BLOCK_ELEMENTS})$`, "i").test(name)) appendPart(parts, "\n");
+  }
+  if (index < html.length && excludedDepth === 0) {
+    appendPart(parts, normalizeText(decodeEntities(html.slice(index)), options));
+  }
+  return finalizeCanonicalParts(parts);
 }
 
 /**
  * Compute a canonical claims hash from a list of claim entries.
  *
- * Claims are serialized as a sorted list of "name=value" pairs, joined by
+ * Claims are serialized as a sorted list of "name:content" pairs, joined by
  * newlines, then hashed. Sorting ensures the order of <meta> elements in
  * the HTML source does not affect the hash. The caller is responsible for
  * computing the actual hash from the returned canonical string.
@@ -223,11 +326,94 @@ export function extractCanonicalText(html, options = {}) {
  * @param {Record<string, string>} claims - claim name → value map
  * @returns {string} Canonical serialized string ready to be hashed
  */
+// Compare two strings by Unicode code point, which is the same ordering as
+// their UTF-8 byte sequences. JS string comparison uses UTF-16 code units,
+// which mis-orders supplementary-plane characters relative to high-BMP ones.
+function compareByCodePoint(a, b) {
+  const ai = Array.from(a);
+  const bi = Array.from(b);
+  const n = Math.min(ai.length, bi.length);
+  for (let i = 0; i < n; i++) {
+    const ca = ai[i].codePointAt(0);
+    const cb = bi[i].codePointAt(0);
+    if (ca !== cb) return ca - cb;
+  }
+  return ai.length - bi.length;
+}
+
 export function canonicalizeClaims(claims) {
+  const seen = new Set();
   const entries = Object.entries(claims)
-    .map(([name, value]) => [normalizeText(name), normalizeText(String(value))])
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return entries.map(([name, value]) => `${name}=${value}`).join("\n");
+    .map(([name, value]) => [normalizeText(name).trim(), normalizeText(String(value)).trim()])
+    .map(([name, value]) => {
+      if (!name) throw new Error("claim-malformed");
+      if (seen.has(name)) throw new Error(`claim-duplicate: ${name}`);
+      seen.add(name);
+      return [name, value];
+    })
+    // Sort by Unicode code point (== UTF-8 byte order), NOT by JS's default
+    // UTF-16 code-unit comparison, so astral/high-BMP names order identically
+    // to the other bindings (draft §4.6).
+    .sort(([a], [b]) => compareByCodePoint(a, b));
+  return entries.map(([name, value]) => `${name}:${value}\n`).join("");
+}
+
+/**
+ * Extract direct child `<meta name content>` claims from a signed-section.
+ * If `html` contains a `<signed-section>`, the first such element is used;
+ * otherwise `html` is treated as the signed-section's inner HTML fragment.
+ *
+ * Duplicate normalized names, missing name/content, and empty normalized names
+ * throw spec-style claim failures.
+ */
+export function extractClaimsFromSignedSection(html) {
+  if (typeof html !== "string") {
+    throw new TypeError("extractClaimsFromSignedSection expects a string");
+  }
+
+  let depth = 0;
+  let inSignedSection = !/<signed-section\b/i.test(html);
+  const claims = {};
+  const seen = new Set();
+  HTML_TOKEN_RE.lastIndex = 0;
+  let match;
+  while ((match = HTML_TOKEN_RE.exec(html))) {
+    const token = match[0];
+    const nameMatch = TAG_NAME_RE.exec(token);
+    if (!nameMatch) continue;
+    const name = nameMatch[1].toLowerCase();
+    const closing = /^<\//.test(token);
+    const selfClosing = /\/\s*>$/.test(token) || VOID_TAGS.has(name);
+
+    if (!inSignedSection) {
+      if (!closing && name === "signed-section") {
+        inSignedSection = true;
+        depth = 0;
+      }
+      continue;
+    }
+
+    if (closing) {
+      if (name === "signed-section" && depth === 0) break;
+      if (depth > 0) depth--;
+      continue;
+    }
+
+    if (depth === 0 && name === "meta") {
+      const attrs = parseAttributes(token);
+      if (!attrs.has("name") || !attrs.has("content")) throw new Error("claim-malformed");
+      const claimName = normalizeText(attrs.get("name")).trim();
+      const content = normalizeText(attrs.get("content")).trim();
+      if (!claimName) throw new Error("claim-malformed");
+      if (seen.has(claimName)) throw new Error(`claim-duplicate: ${claimName}`);
+      seen.add(claimName);
+      claims[claimName] = content;
+      continue;
+    }
+
+    if (!selfClosing) depth++;
+  }
+  return claims;
 }
 
 // === Signature binding (spec §2.1) ===
@@ -242,7 +428,7 @@ export function canonicalizeClaims(claims) {
  * @param {object} parts
  * @param {string} parts.contentHash - prefixed canonical content hash (e.g. "sha256:...")
  * @param {string} parts.claimsHash  - prefixed canonical claims hash
- * @param {string} parts.domain      - publication origin (hostname)
+ * @param {string} parts.domain      - serialized publication origin (`scheme://host[:port]`)
  * @param {string} parts.signedAt    - ISO-8601 timestamp from <meta name="signed-at">
  * @returns {string}
  */
@@ -252,7 +438,24 @@ export function buildSignatureBinding({ contentHash, claimsHash, domain, signedA
       `buildSignatureBinding: missing field(s): contentHash=${contentHash}, claimsHash=${claimsHash}, domain=${domain}, signedAt=${signedAt}`,
     );
   }
+  validateSerializedOrigin(domain);
   return `${contentHash}:${claimsHash}:${domain}:${signedAt}`;
+}
+
+export function validateSerializedOrigin(origin) {
+  let url;
+  try {
+    url = new URL(origin);
+  } catch {
+    throw new Error("domain must be a serialized Web origin");
+  }
+  if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("domain must be a serialized Web origin");
+  }
+  if (url.origin !== origin) {
+    throw new Error(`domain must use canonical serialized origin form: ${url.origin}`);
+  }
+  return origin;
 }
 
 // === Crypto utilities (cross-environment) ===
@@ -276,12 +479,32 @@ function isNodeEnv() {
   return typeof process !== "undefined" && !!process.versions?.node;
 }
 
-function base64ToBytes(b64) {
-  // Accept padded and unpadded base64; tolerate whitespace.
+export function encodeBase64Unpadded(bytes) {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64").replace(/=+$/g, "");
+  }
+  let bin = "";
+  for (const byte of bytes) bin += String.fromCharCode(byte);
+  return btoa(bin).replace(/=+$/g, "");
+}
+
+export function decodeCanonicalBase64(b64) {
+  const input = String(b64);
+  if (!/^[A-Za-z0-9+/]*$/.test(input) || input.length % 4 === 1) {
+    throw new Error("non-canonical base64");
+  }
+  const bytes = base64ToBytesFlexible(input);
+  if (encodeBase64Unpadded(bytes) !== input) {
+    throw new Error("non-canonical base64");
+  }
+  return bytes;
+}
+
+function base64ToBytesFlexible(b64) {
   const cleaned = String(b64).replace(/\s+/g, "");
   const padded = cleaned + "===".slice((cleaned.length + 3) % 4);
   if (typeof atob === "function") {
-    const bin = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+    const bin = atob(padded);
     const out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return out;
@@ -290,28 +513,56 @@ function base64ToBytes(b64) {
   return new Uint8Array(Buffer.from(padded, "base64"));
 }
 
+function base64ToBytes(b64) {
+  return decodeCanonicalBase64(b64);
+}
+
 function utf8ToBytes(str) {
   return new TextEncoder().encode(str);
 }
 
+// Registry identifiers from spec §7.1, plus the two legacy generic spellings
+// ("ecdsa", "rsa") this library shipped with. The generic spellings name an
+// algorithm family and leave the parameter set to the key; the registry
+// identifiers pin curve and hash.
 const ALGO_ALIASES = {
   ED25519: "ed25519",
   ECDSA: "ecdsa",
+  ECDSAP256: "ecdsa-p256",
+  "ECDSA-P256": "ecdsa-p256",
+  "ECDSA-P384": "ecdsa-p384",
   RSA: "rsa",
-  "RSA-SHA256": "rsa",
-  ECDSAP256: "ecdsa",
+  "RSA-SHA256": "rsa-pkcs1-sha256",
+  "RSA-PKCS1-SHA256": "rsa-pkcs1-sha256",
+  "RSA-PSS-SHA256": "rsa-pss-sha256",
 };
 function normalizeAlgo(algorithm) {
   const key = String(algorithm || "ed25519").toUpperCase();
   return ALGO_ALIASES[key] ?? key.toLowerCase();
 }
 
+// OpenSSL/Node curve spellings accepted for each pinned ECDSA identifier.
+const EC_CURVES = {
+  "ecdsa-p256": ["prime256v1", "secp256r1", "p-256"],
+  "ecdsa-p384": ["secp384r1", "p-384"],
+};
+const EC_PARAMS = {
+  "ecdsa-p256": { nodeHash: "sha256", curve: "P-256", hash: "SHA-256" },
+  "ecdsa-p384": { nodeHash: "sha384", curve: "P-384", hash: "SHA-384" },
+};
+
 /**
  * Verify a signature over `message` with `publicKeyPem` using `algorithm`.
  *
- * Algorithms supported: "ed25519", "ecdsa" (P-256 / secp256k1, SHA-256), "rsa" (RSA-SHA256).
- * Algorithm names are case-insensitive. Signature is base64-encoded (padded
- * or unpadded). Public key is a PEM-encoded SPKI document.
+ * Algorithms supported (spec §7.1): "ed25519", "ecdsa-p256", "ecdsa-p384",
+ * "rsa-pss-sha256", "rsa-pkcs1-sha256". The legacy spellings "ecdsa" (SHA-256,
+ * curve taken from the key, which is how the reference server's secp256k1 keys
+ * verify) and "rsa" (= rsa-pkcs1-sha256) remain accepted. Anything else fails
+ * closed. Algorithm names are case-insensitive. Signature is canonical
+ * unpadded standard Base64. Public key is a PEM-encoded SPKI document.
+ *
+ * For the pinned ECDSA identifiers the key's curve MUST match the identifier;
+ * a P-384 key does not verify an "ecdsa-p256" signature and vice versa.
  *
  * Uses Node's native crypto when running in Node (broadest algorithm
  * support, including the secp256k1 curve used by the reference server),
@@ -325,21 +576,52 @@ function normalizeAlgo(algorithm) {
  */
 export async function verifySignature(message, signatureB64, publicKeyPem, algorithm = "ed25519") {
   const algo = normalizeAlgo(algorithm);
-  const sigBytes = base64ToBytes(signatureB64);
+  let sigBytes;
+  try {
+    sigBytes = base64ToBytes(signatureB64);
+  } catch {
+    return false;
+  }
   const msgBytes = utf8ToBytes(message);
 
   const node = isNodeEnv() ? await getNodeCrypto() : null;
   if (node) {
     try {
       const publicKey = node.createPublicKey(publicKeyPem);
+      const keyType = publicKey.asymmetricKeyType;
+      const msg = Buffer.from(msgBytes);
+      const sig = Buffer.from(sigBytes);
       if (algo === "ed25519") {
-        return node.verify(null, Buffer.from(msgBytes), publicKey, Buffer.from(sigBytes));
+        if (keyType !== "ed25519") return false;
+        return node.verify(null, msg, publicKey, sig);
       }
       if (algo === "ecdsa") {
-        return node.verify("sha256", Buffer.from(msgBytes), publicKey, Buffer.from(sigBytes));
+        // Legacy generic identifier: the curve comes from the key.
+        if (keyType !== "ec") return false;
+        return node.verify("sha256", msg, publicKey, sig);
       }
-      if (algo === "rsa") {
-        return node.verify("RSA-SHA256", Buffer.from(msgBytes), publicKey, Buffer.from(sigBytes));
+      if (algo === "ecdsa-p256" || algo === "ecdsa-p384") {
+        if (keyType !== "ec") return false;
+        const curve = String(publicKey.asymmetricKeyDetails?.namedCurve || "").toLowerCase();
+        if (!EC_CURVES[algo].includes(curve)) return false;
+        return node.verify(EC_PARAMS[algo].nodeHash, msg, publicKey, sig);
+      }
+      if (algo === "rsa" || algo === "rsa-pkcs1-sha256") {
+        if (keyType !== "rsa") return false;
+        return node.verify("RSA-SHA256", msg, publicKey, sig);
+      }
+      if (algo === "rsa-pss-sha256") {
+        if (keyType !== "rsa" && keyType !== "rsa-pss") return false;
+        return node.verify(
+          "sha256",
+          msg,
+          {
+            key: publicKey,
+            padding: node.constants.RSA_PKCS1_PSS_PADDING,
+            saltLength: 32,
+          },
+          sig,
+        );
       }
       return false;
     } catch {
@@ -358,12 +640,19 @@ export async function verifySignature(message, signatureB64, publicKeyPem, algor
     if (algo === "ed25519") {
       key = await subtle.importKey("spki", spki, { name: "Ed25519" }, false, ["verify"]);
       params = { name: "Ed25519" };
-    } else if (algo === "ecdsa") {
-      key = await subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-      params = { name: "ECDSA", hash: "SHA-256" };
-    } else if (algo === "rsa") {
+    } else if (algo === "ecdsa" || algo === "ecdsa-p256" || algo === "ecdsa-p384") {
+      // SubtleCrypto has no "curve from the key" mode, so the legacy generic
+      // "ecdsa" identifier resolves to P-256 here. importKey rejects a key on
+      // any other curve, so a mismatched key fails closed.
+      const ec = EC_PARAMS[algo] ?? EC_PARAMS["ecdsa-p256"];
+      key = await subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: ec.curve }, false, ["verify"]);
+      params = { name: "ECDSA", hash: ec.hash };
+    } else if (algo === "rsa" || algo === "rsa-pkcs1-sha256") {
       key = await subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
       params = { name: "RSASSA-PKCS1-v1_5" };
+    } else if (algo === "rsa-pss-sha256") {
+      key = await subtle.importKey("spki", spki, { name: "RSA-PSS", hash: "SHA-256" }, false, ["verify"]);
+      params = { name: "RSA-PSS", saltLength: 32 };
     } else {
       return false;
     }
@@ -378,7 +667,7 @@ function pemToBytes(pem) {
     .replace(/-----BEGIN [^-]+-----/g, "")
     .replace(/-----END [^-]+-----/g, "")
     .replace(/\s+/g, "");
-  return base64ToBytes(body);
+  return base64ToBytesFlexible(body);
 }
 
 // === Keyid resolution (spec §2.2) ===
@@ -392,7 +681,35 @@ function pemToBytes(pem) {
  * @property {string} keyid
  * @property {string} publicKeyPem
  * @property {string} algorithm
+ * @property {boolean} [revoked] `revoked: true` from the key document (spec §8.2).
+ * @property {string} [expires] RFC3339 expiry from the key document (spec §8.2).
  */
+
+/**
+ * Spec §8.2: a `revoked` value of true, or an `expires` value in the past, MUST
+ * be treated as a "key-revoked" verification failure, and the verifier MUST NOT
+ * proceed to signature verification. Unparseable `expires` values are treated as
+ * revoked so a malformed directory response cannot buy a key extra life.
+ *
+ * @param {{ revoked?: boolean, expires?: string } | null | undefined} key
+ * @param {number} [now]
+ * @returns {boolean}
+ */
+export function isKeyRevoked(key, now = Date.now()) {
+  if (!key) return false;
+  if (key.revoked === true) return true;
+  if (key.expires === undefined || key.expires === null || key.expires === "") return false;
+  const expiresAt = Date.parse(String(key.expires));
+  return Number.isNaN(expiresAt) || expiresAt <= now;
+}
+
+/** Read the optional `revoked`/`expires` fields of a key document (spec §8.2). */
+function keyLifecycleFields(doc) {
+  const out = {};
+  if (typeof doc?.revoked === "boolean") out.revoked = doc.revoked;
+  if (typeof doc?.expires === "string" && doc.expires !== "") out.expires = doc.expires;
+  return out;
+}
 
 /**
  * @typedef {Object} KeyResolver
@@ -431,12 +748,18 @@ export function didWebResolver(opts = {}) {
         : `https://${host}/.well-known/did.json`;
       const doc = await fetchJson(url, opts.fetch);
       if (!doc || doc._rawText) return null;
-      const vm = (doc.verificationMethod || []).find((m) => m.publicKeyPem);
+      if (doc.deactivated === true) return null;
+      // Spec §8.1: an expired or revoked verification method is a DID
+      // resolution failure, so skip it rather than hand it back to the caller.
+      const vm = (doc.verificationMethod || []).find(
+        (m) => m.publicKeyPem && !isKeyRevoked(m),
+      );
       if (!vm) return null;
       return {
         keyid,
         publicKeyPem: vm.publicKeyPem,
         algorithm: vm.algorithm || vmTypeToAlgo(vm.type) || "ed25519",
+        ...keyLifecycleFields(vm),
       };
     },
   };
@@ -471,7 +794,12 @@ export function directUrlResolver(opts = {}) {
       }
       const pem = data.publicKey || data.publicKeyPem || data.key;
       if (!pem) return null;
-      return { keyid, publicKeyPem: pem, algorithm: data.algorithm || "ed25519" };
+      return {
+        keyid,
+        publicKeyPem: pem,
+        algorithm: data.algorithm || "ed25519",
+        ...keyLifecycleFields(data),
+      };
     },
   };
 }
@@ -501,7 +829,12 @@ export function trustDirectoryResolver(opts) {
           }
           const pem = data.publicKey || data.publicKeyPem || data.key;
           if (!pem) continue;
-          return { keyid, publicKeyPem: pem, algorithm: data.algorithm || "ed25519" };
+          return {
+            keyid,
+            publicKeyPem: pem,
+            algorithm: data.algorithm || "ed25519",
+            ...keyLifecycleFields(data),
+          };
         } catch {
           // try next base
         }
@@ -529,18 +862,37 @@ export async function resolveKey(keyid, resolvers) {
 // === Endorsements (spec §2.5) ===
 
 /**
- * Build the canonical binding for an endorsement: `{content-hash}:{timestamp}`.
- * The endorser's keyid is implicit (resolution step), matching the content-
- * signature binding's design.
+ * Build the canonical JSON signing payload for an endorsement. The payload is
+ * deterministic JSON with object keys sorted lexically and `signature` omitted.
  *
  * @param {{ endorsement: string, timestamp: string }} e
  * @returns {string}
  */
 export function buildEndorsementBinding(e) {
-  if (!e?.endorsement || !e?.timestamp) {
-    throw new Error("buildEndorsementBinding: missing endorsement or timestamp");
+  for (const field of ["endorser", "endorsement", "algorithm", "timestamp"]) {
+    if (!e?.[field]) throw new Error(`buildEndorsementBinding: missing ${field}`);
   }
-  return `${e.endorsement}:${e.timestamp}`;
+  const { signature, ...unsigned } = e;
+  return canonicalizeJson(unsigned);
+}
+
+export function canonicalizeJson(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalizeJson).join(",")}]`;
+  if (typeof value === "object") {
+    return `{${Object.keys(value)
+      .filter((k) => value[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalizeJson(value[k])}`)
+      .join(",")}}`;
+  }
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("non-finite JSON number");
+    return JSON.stringify(value);
+  }
+  if (typeof value === "boolean") return value ? "true" : "false";
+  throw new Error(`unsupported JSON value: ${typeof value}`);
 }
 
 /**
@@ -554,7 +906,7 @@ export function buildEndorsementBinding(e) {
  *   endorsement: string,
  *   signature: string,
  *   timestamp: string,
- *   algorithm?: string,
+ *   algorithm: string,
  * }} endorsement
  * @param {KeyResolver[]} resolvers
  * @returns {Promise<boolean>}
@@ -563,14 +915,18 @@ export async function verifyEndorsement(endorsement, resolvers) {
   if (!endorsement) return false;
   const resolved = await resolveKey(endorsement.endorser, resolvers);
   if (!resolved) return false;
-  const binding = buildEndorsementBinding(endorsement);
-  // Resolver-declared algorithm is authoritative — the key knows what it is.
-  // The endorsement.algorithm field is only consulted as a fallback when the
-  // resolver doesn't carry one. Cross-platform parity: matches Go binding.
+  if (isKeyRevoked(resolved)) return false;
+  if (!endorsement.signature) return false;
+  let binding;
+  try {
+    binding = buildEndorsementBinding(endorsement);
+  } catch {
+    return false;
+  }
   return await verifySignature(
     binding,
     endorsement.signature,
     resolved.publicKeyPem,
-    resolved.algorithm || endorsement.algorithm || "ed25519",
+    endorsement.algorithm,
   );
 }

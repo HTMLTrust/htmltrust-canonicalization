@@ -43,7 +43,7 @@ func TestNormalize(t *testing.T) {
 		{"ZWNJ preserved (different)", "word‌word", "wordword", false},
 		{"Ellipsis → three dots", "Hello…", "Hello...", true},
 		{"Curly single quotes → straight", "‘Hello’", "'Hello'", true},
-		{"Low-9 quotes → straight", "‚German“", "\"German\"", true},
+		{"Low-9 quotes → straight", "‚German“", "'German\"", true},
 		{"No-break space → space", "a b", "a b", true},
 		{"Ideographic space → space", "a　b", "a b", true},
 		{"Whitespace collapse", "a  \t  b", "a b", true},
@@ -73,7 +73,7 @@ func TestExtractCanonicalText(t *testing.T) {
 		{
 			name: "block boundaries become whitespace",
 			in:   "<p>Hello</p><p>World</p>",
-			want: "Hello World",
+			want: "Hello\nWorld",
 		},
 		{
 			name: "inline elements do not introduce spaces",
@@ -83,7 +83,7 @@ func TestExtractCanonicalText(t *testing.T) {
 		{
 			name: "scripts and styles dropped with content",
 			in:   "<p>before</p><script>alert('x')</script><style>p{}</style><p>after</p>",
-			want: "before after",
+			want: "before\nafter",
 		},
 		{
 			name: "meta inside signed-section is metadata, not content",
@@ -108,7 +108,12 @@ func TestExtractCanonicalText(t *testing.T) {
 		{
 			name: "br is a void element → whitespace",
 			in:   "<p>line1<br/>line2</p>",
-			want: "line1 line2",
+			want: "line1\nline2",
+		},
+		{
+			name: "signed semantic attributes",
+			in:   `<p><a href="https://example.org/story?a=1&amp;b=2" aria-label="Read “more”">link</a><img src="https://example.org/img.png" alt="Hero — image"></p>`,
+			want: "@attr:a:href:https://example.org/story?a=1&b=2\n@attr:a:aria-label:Read \"more\"\nlink\n@attr:img:src:https://example.org/img.png\n@attr:img:alt:Hero - image",
 		},
 	}
 
@@ -131,9 +136,9 @@ func TestCanonicalizeClaims(t *testing.T) {
 	got := CanonicalizeClaims(map[string]string{
 		"signed-at": "2025-01-01T00:00:00Z",
 		"author":    "alice",
-		"domain":    "example.com",
+		"domain":    "https://example.com",
 	})
-	want := "author=alice\ndomain=example.com\nsigned-at=2025-01-01T00:00:00Z"
+	want := "author:alice\ndomain:https://example.com\nsigned-at:2025-01-01T00:00:00Z\n"
 	if got != want {
 		t.Errorf("CanonicalizeClaims = %q, want %q", got, want)
 	}
@@ -143,7 +148,7 @@ func TestCanonicalizeClaimsNormalizesValues(t *testing.T) {
 	got := CanonicalizeClaims(map[string]string{
 		"title": "“Hello”",
 	})
-	want := `title="Hello"`
+	want := "title:\"Hello\"\n"
 	if got != want {
 		t.Errorf("CanonicalizeClaims = %q, want %q", got, want)
 	}
@@ -152,11 +157,11 @@ func TestCanonicalizeClaimsNormalizesValues(t *testing.T) {
 // ----- BuildSignatureBinding -----
 
 func TestBuildSignatureBinding(t *testing.T) {
-	got, err := BuildSignatureBinding("sha256:abc", "sha256:def", "example.com", "2025-01-01T00:00:00Z")
+	got, err := BuildSignatureBinding("sha256:abc", "sha256:def", "https://example.com", "2025-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "sha256:abc:sha256:def:example.com:2025-01-01T00:00:00Z"
+	want := "sha256:abc:sha256:def:https://example.com:2025-01-01T00:00:00Z"
 	if got != want {
 		t.Errorf("BuildSignatureBinding = %q, want %q", got, want)
 	}
@@ -164,10 +169,11 @@ func TestBuildSignatureBinding(t *testing.T) {
 
 func TestBuildSignatureBindingErrors(t *testing.T) {
 	cases := [][]string{
-		{"", "b", "c", "d"},
-		{"a", "", "c", "d"},
+		{"", "b", "https://example.com", "d"},
+		{"a", "", "https://example.com", "d"},
 		{"a", "b", "", "d"},
-		{"a", "b", "c", ""},
+		{"a", "b", "https://example.com", ""},
+		{"a", "b", "example.com", "d"},
 	}
 	for _, c := range cases {
 		if _, err := BuildSignatureBinding(c[0], c[1], c[2], c[3]); err == nil {
@@ -197,7 +203,7 @@ func TestVerifySignatureEd25519(t *testing.T) {
 
 	pemStr := encodePKIX(t, pub)
 
-	ok, err := VerifySignature(msg, base64.StdEncoding.EncodeToString(sig), pemStr, "ed25519")
+	ok, err := VerifySignature(msg, base64.RawStdEncoding.EncodeToString(sig), pemStr, "ed25519")
 	if err != nil {
 		t.Fatalf("VerifySignature returned error: %v", err)
 	}
@@ -205,7 +211,7 @@ func TestVerifySignatureEd25519(t *testing.T) {
 		t.Errorf("expected ed25519 signature to verify")
 	}
 
-	// Unpadded base64 should also work.
+	// Uppercase algorithm should also work.
 	ok, err = VerifySignature(msg, base64.RawStdEncoding.EncodeToString(sig), pemStr, "ED25519")
 	if err != nil {
 		t.Fatalf("VerifySignature(raw) returned error: %v", err)
@@ -215,9 +221,13 @@ func TestVerifySignatureEd25519(t *testing.T) {
 	}
 
 	// Tampered message must fail.
-	ok, _ = VerifySignature("tampered", base64.StdEncoding.EncodeToString(sig), pemStr, "ed25519")
+	ok, _ = VerifySignature("tampered", base64.RawStdEncoding.EncodeToString(sig), pemStr, "ed25519")
 	if ok {
 		t.Errorf("expected tampered ed25519 signature to fail")
+	}
+
+	if ok, _ = VerifySignature(msg, base64.StdEncoding.EncodeToString(sig), pemStr, "ed25519"); ok {
+		t.Errorf("expected padded base64 signature to be rejected")
 	}
 }
 
@@ -234,7 +244,7 @@ func TestVerifySignatureRSA(t *testing.T) {
 	}
 
 	pemStr := encodePKIX(t, &priv.PublicKey)
-	ok, err := VerifySignature(msg, base64.StdEncoding.EncodeToString(sig), pemStr, "RSA")
+	ok, err := VerifySignature(msg, base64.RawStdEncoding.EncodeToString(sig), pemStr, "RSA")
 	if err != nil {
 		t.Fatalf("VerifySignature returned error: %v", err)
 	}
@@ -242,7 +252,7 @@ func TestVerifySignatureRSA(t *testing.T) {
 		t.Errorf("expected rsa signature to verify")
 	}
 
-	ok, _ = VerifySignature("tampered", base64.StdEncoding.EncodeToString(sig), pemStr, "rsa")
+	ok, _ = VerifySignature("tampered", base64.RawStdEncoding.EncodeToString(sig), pemStr, "rsa")
 	if ok {
 		t.Errorf("expected tampered rsa signature to fail")
 	}
@@ -264,7 +274,7 @@ func TestVerifySignatureECDSA(t *testing.T) {
 		t.Fatalf("asn1.Marshal: %v", err)
 	}
 	pemStr := encodePKIX(t, &priv.PublicKey)
-	ok, err := VerifySignature(msg, base64.StdEncoding.EncodeToString(sigBytes), pemStr, "ecdsa")
+	ok, err := VerifySignature(msg, base64.RawStdEncoding.EncodeToString(sigBytes), pemStr, "ecdsa")
 	if err != nil {
 		t.Fatalf("VerifySignature returned error: %v", err)
 	}
@@ -486,9 +496,12 @@ func TestVerifyEndorsement(t *testing.T) {
 	defer srv.Close()
 	endorsement.Endorser = srv.URL + "/key.json"
 
-	msg := endorsement.Endorsement + ":" + endorsement.Timestamp
+	msg, err := BuildEndorsementBinding(endorsement)
+	if err != nil {
+		t.Fatalf("BuildEndorsementBinding: %v", err)
+	}
 	sig := ed25519.Sign(priv, []byte(msg))
-	endorsement.Signature = base64.StdEncoding.EncodeToString(sig)
+	endorsement.Signature = base64.RawStdEncoding.EncodeToString(sig)
 
 	resolvers := []KeyResolver{DirectURLResolver{HTTPClient: srv.Client()}}
 	ok, err := VerifyEndorsement(context.Background(), endorsement, resolvers)
@@ -514,6 +527,7 @@ func TestVerifyEndorsementMissingFields(t *testing.T) {
 		{Endorser: "x", Endorsement: "", Signature: "x", Timestamp: "x"},
 		{Endorser: "x", Endorsement: "x", Signature: "", Timestamp: "x"},
 		{Endorser: "x", Endorsement: "x", Signature: "x", Timestamp: ""},
+		{Endorser: "x", Endorsement: "x", Signature: "x", Timestamp: "x", Algorithm: ""},
 	}
 	for i, c := range cases {
 		if _, err := VerifyEndorsement(context.Background(), c, nil); err == nil {

@@ -1,8 +1,8 @@
 """Conformance tests for ``extract_canonical_text``.
 
 These cases mirror the contract of the JavaScript reference
-``extractCanonicalText`` and confirm that block-element boundaries
-become whitespace, inline elements do not, excluded elements vanish
+``extractCanonicalText`` and confirm that boundary-producing elements
+emit line feeds, inline elements do not, excluded elements vanish
 entirely, and HTML entities are decoded by the parser before
 normalization.
 """
@@ -20,10 +20,10 @@ def test_inline_no_separator():
     )
 
 
-def test_block_boundary_inserts_space():
-    """<p>A</p><p>B</p> -> "A B" (not "AB")."""
+def test_block_boundary_inserts_linefeed():
+    """<p>A</p><p>B</p> -> "A\nB" (not "AB")."""
     assert (
-        extract_canonical_text("<p>A</p><p>B</p>") == "A B"
+        extract_canonical_text("<p>A</p><p>B</p>") == "A\nB"
     )
 
 
@@ -36,7 +36,7 @@ def test_excluded_elements_removed():
         "<meta name='claim:License' content='CC-BY-4.0'>"
         "<p>after</p>"
     )
-    assert extract_canonical_text(html) == "before after"
+    assert extract_canonical_text(html) == "before\nafter"
 
 
 def test_entity_decoding():
@@ -56,7 +56,7 @@ def test_normalization_pipeline_applied():
 
 
 def test_nested_blocks():
-    """Deeply nested block structure still produces single-space joins."""
+    """Deeply nested block structure still collapses repeated line feeds."""
     html = (
         "<article>"
         "<header><h1>Title</h1></header>"
@@ -64,15 +64,13 @@ def test_nested_blocks():
         "</article>"
     )
     out = extract_canonical_text(html)
-    # We don't pin the exact spacing count beyond "single-space collapsed",
-    # since multiple block-boundary spaces must collapse via phase 2.
-    assert out == "Title Para one. Para two."
+    assert out == "Title\nPara one.\nPara two."
 
 
 def test_list_items_separated():
     assert (
         extract_canonical_text("<ul><li>a</li><li>b</li><li>c</li></ul>")
-        == "a b c"
+        == "a\nb\nc"
     )
 
 
@@ -83,12 +81,36 @@ def test_extract_rejects_non_string():
 
 def test_table_cells_separated():
     html = "<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>"
-    assert extract_canonical_text(html) == "a b c d"
+    assert extract_canonical_text(html) == "a\nb\nc\nd"
 
 
 def test_inline_link_no_separator():
-    """Anchor tags are inline; they must NOT add separators."""
+    """Anchor tags are inline; they must NOT add separators. With a base URL
+    the relative href resolves and emits a signed-attribute record."""
     assert (
-        extract_canonical_text('<p>see <a href="x">here</a> now</p>')
-        == "see here now"
+        extract_canonical_text(
+            '<p>see <a href="x">here</a> now</p>',
+            base_url="https://example.org/",
+        )
+        == "see @attr:a:href:https://example.org/x\nhere now"
+    )
+
+
+def test_relative_url_no_base_fails():
+    """A relative href with no base URL MUST fail (draft §4.3.2)."""
+    with pytest.raises(ValueError, match="attribute-canonicalization-failed"):
+        extract_canonical_text('<p><a href="x">here</a></p>')
+
+
+def test_signed_semantic_attributes_are_canonicalized():
+    html = (
+        '<p><a href="/story?a=1&amp;b=2" aria-label="Read “more”">link</a>'
+        '<img src="img.png" alt="Hero — image"></p>'
+    )
+    assert extract_canonical_text(html, base_url="https://example.org/base/page.html") == (
+        '@attr:a:href:https://example.org/story?a=1&b=2\n'
+        '@attr:a:aria-label:Read "more"\n'
+        'link\n'
+        '@attr:img:src:https://example.org/base/img.png\n'
+        '@attr:img:alt:Hero - image'
     )

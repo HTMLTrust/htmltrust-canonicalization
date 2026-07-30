@@ -1,0 +1,6 @@
+{
+  "name": "template-excluded",
+  "description": "A <template> subtree contributes no bytes (excluded element).",
+  "input": "<p>before<template>SECRET<a href=\"https://evil.example/x\">y</a></template>after</p>",
+  "expected": "beforeafter"
+}

@@ -98,6 +98,7 @@ _RUN_OF_SPACES_RE = re.compile(r" {2,}")
 _SINGLE_QUOTE_CODEPOINTS: list[_RangeOrPoint] = [
     0x2018,  # left single quote
     0x2019,  # right single quote
+    0x201A,  # single low-9 quote (single-quote class per draft §4.4.4)
     0x201B,  # single high-reversed-9
     0x2039,  # single left guillemet
     0x203A,  # single right guillemet
@@ -108,7 +109,6 @@ _SINGLE_QUOTE_CODEPOINTS: list[_RangeOrPoint] = [
 _SINGLE_QUOTE_RE = re.compile(_build_class(_SINGLE_QUOTE_CODEPOINTS))
 
 _DOUBLE_QUOTE_CODEPOINTS: list[_RangeOrPoint] = [
-    0x201A,  # single low-9 quote (intentionally mapped to double)
     0x201C,  # left double quote
     0x201D,  # right double quote
     0x201E,  # low double quote

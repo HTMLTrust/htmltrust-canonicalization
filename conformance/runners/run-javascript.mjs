@@ -12,9 +12,7 @@
  *   node run-javascript.mjs --update  # rewrite the `expected` field from
  *                                     # the current binding output
  *
- * The JS binding currently exports only `normalizeText`; extract and
- * claims fixtures are reported as SKIP (not failures) because the
- * runner has nothing to call.
+ * The JS binding covers normalize, extract, and claims fixtures.
  */
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -35,11 +33,10 @@ const UPDATE = args.has("--update");
 // and returns the produced output string. Returns `null` if the binding
 // has no implementation for that suite.
 const RUNNERS = {
-  normalize: (input) => binding.normalizeText(input),
-  // The JS binding does not yet export extractCanonicalText or
-  // canonicalizeClaims; the runner reports these suites as SKIP.
-  extract: () => null,
-  claims: () => null,
+  normalize: (fx) => binding.normalizeText(fx.input),
+  extract: (fx) =>
+    binding.extractCanonicalText(fx.input, { baseUrl: fx.baseURL ?? null }),
+  claims: (fx) => binding.canonicalizeClaims(fx.input),
 };
 
 /** List fixture files in a suite directory, sorted lexically. */
@@ -77,14 +74,36 @@ for (const suite of ["normalize", "extract", "claims"]) {
   for (const path of listFixtures(suite)) {
     const fixture = readFixture(path);
     const id = relPath(path);
+    const expectError = fixture.error;
 
     let actual;
     try {
-      actual = runner(fixture.input);
+      actual = runner(fixture);
     } catch (err) {
+      const emsg = err && err.message ? err.message : String(err);
+      if (expectError) {
+        if (emsg.includes(expectError)) {
+          pass++;
+          console.log(`PASS ${id}  (expected error ${expectError})`);
+        } else {
+          fail++;
+          const msg = `FAIL ${id}\n  expected error: ${expectError}\n  got error:      ${emsg}`;
+          failures.push(msg);
+          console.log(msg);
+        }
+        continue;
+      }
       // A runner that throws unexpectedly counts as a fail.
       fail++;
-      const msg = `FAIL ${id}\n  threw: ${err && err.message ? err.message : err}`;
+      const msg = `FAIL ${id}\n  threw: ${emsg}`;
+      failures.push(msg);
+      console.log(msg);
+      continue;
+    }
+
+    if (expectError) {
+      fail++;
+      const msg = `FAIL ${id}\n  expected error: ${expectError}\n  got output:     ${showString(actual)}`;
       failures.push(msg);
       console.log(msg);
       continue;

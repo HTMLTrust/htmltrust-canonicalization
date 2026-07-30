@@ -4,17 +4,18 @@ Python binding for the HTMLTrust canonical text normalization library. Produces 
 
 ## Status
 
-Implemented. The 18-case normalization conformance suite from the JavaScript reference (`javascript/test.js`) passes. `extract_canonical_text` and `canonicalize_claims` have parity tests against the JavaScript / Go / PHP reference behaviour.
+Implemented. The shared conformance suite passes for normalization, extraction, and claims. `extract_canonical_text` includes the current signed semantic attribute allowlist (`href`, `src`, `alt`, `aria-label`) when a base URL is available for relative URLs.
 
 Out of scope for this package: signature verification and key resolution. Those live in the higher-level HTMLTrust client libraries (and will arrive in a follow-up PR for the Python binding once the JS surface area lands on `main`).
 
 ## Scope
 
-This package provides three functions:
+This package provides four functions:
 
 1. **`normalize_text(text: str, preserve_whitespace: bool = False) -> str`** -- applies the 8-phase canonicalization defined in [`../spec.md`](../spec.md) to a UTF-8 string. Mirrors the existing JavaScript/Go/PHP signatures.
-2. **`extract_canonical_text(html: str, preserve_whitespace: bool = False) -> str`** -- parses an HTML fragment with BeautifulSoup, walks the DOM, emits text nodes in document order with single-space separators between block elements, and applies `normalize_text` to the result. This is the HTML -> canonical text extraction defined in the paper's §2.1.
-3. **`canonicalize_claims(claims: Mapping[str, object]) -> str`** -- serializes a claim map to the canonical, hashable string used by the `claims-hash` field of the signature binding (each entry normalized, sorted lexically by name, joined with `\n` as `name=value`).
+2. **`extract_canonical_text(html: str, preserve_whitespace: bool = False, base_url: str | None = None) -> str`** -- parses an HTML fragment with BeautifulSoup, walks the DOM, emits text nodes and signed semantic attributes in document order, and applies `normalize_text` to text/attribute values.
+3. **`canonicalize_claims(claims: Mapping[str, object]) -> str`** -- serializes a claim map to the canonical, hashable string used by the `claims-hash` field of the signature binding (each entry normalized, sorted lexically by name, emitted as `name:content\n`).
+4. **`extract_claims_from_signed_section(html: str) -> dict[str, str]`** -- extracts all direct child `<meta name content>` claims from a `<signed-section>` or signed-section inner fragment, including `author` and `signed-at`, and rejects duplicate normalized names.
 
 All three are pure functions: no network, no file I/O, deterministic output for the same input.
 
@@ -43,6 +44,7 @@ from htmltrust_canonicalization import (
     normalize_text,
     extract_canonical_text,
     canonicalize_claims,
+    extract_claims_from_signed_section,
 )
 
 canonical = normalize_text('He said, "Hello…"')
@@ -55,7 +57,7 @@ claims_str = canonicalize_claims({
     'License': 'CC-BY-4.0',
     'AIAssistance': 'None',
 })
-# -> 'AIAssistance=None\nLicense=CC-BY-4.0'
+# -> 'AIAssistance:None\nLicense:CC-BY-4.0\n'
 ```
 
 ## Tests

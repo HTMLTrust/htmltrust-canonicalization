@@ -1,6 +1,6 @@
 {
   "name": "list-items-separated",
-  "description": "Each <li> is a block; items separate with a single space.",
+  "description": "Each <li> is boundary-producing; items separate with a line feed.",
   "input": "<ul><li>a</li><li>b</li><li>c</li></ul>",
-  "expected": "a b c"
+  "expected": "a\nb\nc"
 }

@@ -13,7 +13,7 @@ class ExtractCanonicalTextTest extends TestCase
     public function testStripsScriptStyleAndContents(): void
     {
         $html = '<p>Hello</p><script>alert("x")</script><style>p{color:red}</style><p>World</p>';
-        $this->assertSame('Hello World', Canonicalize::extractCanonicalText($html));
+        $this->assertSame("Hello\nWorld", Canonicalize::extractCanonicalText($html));
     }
 
     public function testStripsMetaInsideSignedSection(): void
@@ -23,10 +23,10 @@ class ExtractCanonicalTextTest extends TestCase
         $this->assertSame('Body', Canonicalize::extractCanonicalText($html));
     }
 
-    public function testBlockBoundariesBecomeSpaces(): void
+    public function testBlockBoundariesBecomeLineFeeds(): void
     {
         $html = '<p>A</p><p>B</p>';
-        $this->assertSame('A B', Canonicalize::extractCanonicalText($html));
+        $this->assertSame("A\nB", Canonicalize::extractCanonicalText($html));
     }
 
     public function testInlineTagsDoNotAddSpaces(): void
@@ -67,15 +67,13 @@ class ExtractCanonicalTextTest extends TestCase
     public function testStripsLinksButPreservesText(): void
     {
         $html = '<p>See <a href="https://example.com">our site</a> now.</p>';
-        $this->assertSame('See our site now.', Canonicalize::extractCanonicalText($html));
+        $this->assertSame("See @attr:a:href:https://example.com/\nour site now.", Canonicalize::extractCanonicalText($html));
     }
 
-    public function testStripsImagesEntirely(): void
+    public function testImagesContributeSignedSemanticAttributes(): void
     {
         $html = '<p>Before<img src="x.png" alt="x">After</p>';
-        // Void <img> stripped (becomes a space). Then inline text concatenates,
-        // and whitespace collapses.
-        $this->assertSame('Before After', Canonicalize::extractCanonicalText($html));
+        $this->assertSame("Before\n@attr:img:alt:x\nAfter", Canonicalize::extractCanonicalText($html));
     }
 
     public function testEmptyAndAllMarkup(): void

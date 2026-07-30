@@ -1,6 +1,6 @@
 {
   "name": "nested-block-elements",
-  "description": "Deeply nested block structure still collapses to single-space joins.",
+  "description": "Deeply nested boundary-producing structure collapses repeated line feeds.",
   "input": "<article><header><h1>Title</h1></header><section><p>Para one.</p><p>Para two.</p></section></article>",
-  "expected": "Title Para one. Para two."
+  "expected": "Title\nPara one.\nPara two."
 }

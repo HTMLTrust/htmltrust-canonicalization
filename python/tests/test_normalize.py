@@ -41,7 +41,7 @@ NORMALIZATION_CASES = [
     ("word‌word", "wordword", False, "ZWNJ preserved (different)"),
     ("Hello…", "Hello...", True, "Ellipsis -> three dots"),
     ("‘Hello’", "'Hello'", True, "Curly single quotes -> straight"),
-    ("‚German“", '"German"', True, "Low-9 quotes -> straight"),
+    ("‚German“", "'German\"", True, "Low-9 quotes -> straight"),
     ("a b", "a b", True, "No-break space -> space"),
     ("a　b", "a b", True, "Ideographic space -> space"),
     ("a  \t  b", "a b", True, "Whitespace collapse"),

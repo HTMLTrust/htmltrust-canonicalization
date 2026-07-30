@@ -18,9 +18,11 @@
 #   ./conformance/run-all.sh
 #   REQUIRE_ALL_LANGUAGES=1 ./conformance/run-all.sh
 #
-# Re-run with --update to regenerate `expected` fields. Note: only the
-# Python and Rust runners cover the extract/ and claims/ suites; the
-# normalize suite reaches consensus across all five languages.
+# Re-run with --update to regenerate `expected` fields. All five language
+# runners cover the normalize/, extract/, and claims/ suites, including the
+# expected-error fixtures (fixtures carrying an `error` field) and the
+# baseURL-bearing URL fixtures. Set REQUIRE_ALL_LANGUAGES=1 in CI to hard-fail
+# when a toolchain is missing so a silent skip cannot mask a divergence.
 
 set -uo pipefail
 

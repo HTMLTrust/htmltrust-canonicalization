@@ -1,0 +1,9 @@
+{
+  "name": "duplicate-name-fullwidth-fails",
+  "description": "Two names that normalize (NFKC) to the same value MUST fail claim-duplicate.",
+  "input": {
+    "Author": "x",
+    "Ａuthor": "y"
+  },
+  "error": "claim-duplicate"
+}

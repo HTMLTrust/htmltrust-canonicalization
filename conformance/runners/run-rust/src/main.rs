@@ -22,42 +22,33 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use htmltrust_canonicalization::{
-    canonicalize_claims, extract_canonical_text, normalize_text,
+    canonicalize_claims_checked, normalize_text, try_extract_canonical_text_with_base_url,
 };
 use serde_json::{Map, Value};
 
-#[derive(Debug)]
-enum SuiteError {
-    BadInput(String),
-}
-
-impl std::fmt::Display for SuiteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SuiteError::BadInput(msg) => write!(f, "bad fixture input: {msg}"),
-        }
-    }
-}
-
-/// Run a single fixture through the appropriate binding function.
-fn run_suite(suite: &str, input: &Value) -> Result<String, SuiteError> {
+/// Run a single fixture through the appropriate binding function. The `Err`
+/// carries the canonicalization failure code (e.g. "claim-duplicate") so the
+/// caller can match it against an `error` fixture.
+fn run_suite(suite: &str, fx: &Map<String, Value>) -> Result<String, String> {
+    let input = fx.get("input").cloned().unwrap_or(Value::Null);
     match suite {
         "normalize" => {
-            let s = input.as_str().ok_or_else(|| {
-                SuiteError::BadInput("normalize input must be a string".into())
-            })?;
+            let s = input
+                .as_str()
+                .ok_or_else(|| "normalize input must be a string".to_string())?;
             Ok(normalize_text(s, false))
         }
         "extract" => {
-            let s = input.as_str().ok_or_else(|| {
-                SuiteError::BadInput("extract input must be a string".into())
-            })?;
-            Ok(extract_canonical_text(s))
+            let s = input
+                .as_str()
+                .ok_or_else(|| "extract input must be a string".to_string())?;
+            let base = fx.get("baseURL").and_then(|v| v.as_str());
+            try_extract_canonical_text_with_base_url(s, base)
         }
         "claims" => {
-            let obj = input.as_object().ok_or_else(|| {
-                SuiteError::BadInput("claims input must be an object".into())
-            })?;
+            let obj = input
+                .as_object()
+                .ok_or_else(|| "claims input must be an object".to_string())?;
             let mut map: BTreeMap<String, String> = BTreeMap::new();
             for (k, v) in obj {
                 // Coerce non-string values to their JSON representation so
@@ -68,7 +59,7 @@ fn run_suite(suite: &str, input: &Value) -> Result<String, SuiteError> {
                 };
                 map.insert(k.clone(), value);
             }
-            Ok(canonicalize_claims(&map))
+            canonicalize_claims_checked(&map)
         }
         _ => unreachable!("unknown suite: {suite}"),
     }
@@ -187,13 +178,27 @@ fn main() -> ExitCode {
                 .display()
                 .to_string();
             let mut fixture = load_fixture(&path);
-            let input = fixture
-                .get("input")
-                .cloned()
-                .unwrap_or(Value::Null);
-            let actual = match run_suite(suite, &input) {
+            let expect_error = fixture
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let actual = match run_suite(suite, &fixture) {
                 Ok(s) => s,
                 Err(e) => {
+                    if let Some(ref want) = expect_error {
+                        if e.contains(want) {
+                            passed += 1;
+                            println!("PASS {id}  (expected error {want})");
+                        } else {
+                            failed += 1;
+                            let msg = format!(
+                                "FAIL {id}\n  expected error: {want}\n  got error:      {e}"
+                            );
+                            println!("{msg}");
+                            failures.push(msg);
+                        }
+                        continue;
+                    }
                     failed += 1;
                     let msg = format!("FAIL {id}\n  threw: {e}");
                     println!("{msg}");
@@ -201,6 +206,17 @@ fn main() -> ExitCode {
                     continue;
                 }
             };
+
+            if let Some(ref want) = expect_error {
+                failed += 1;
+                let msg = format!(
+                    "FAIL {id}\n  expected error: {want}\n  got output:     {}",
+                    show(&Value::String(actual.clone()))
+                );
+                println!("{msg}");
+                failures.push(msg);
+                continue;
+            }
 
             if update {
                 fixture.insert("expected".to_string(), Value::String(actual));

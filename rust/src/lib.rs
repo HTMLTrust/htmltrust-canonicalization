@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use scraper::{node::Node, Html};
 use ego_tree::NodeRef;
 use unicode_normalization::UnicodeNormalization;
+use url::Url;
 
 // ---------------------------------------------------------------------------
 // Codepoint ranges, mirroring the JS reference regex character classes
@@ -68,6 +69,7 @@ const WHITESPACE_RANGES: &[(u32, u32)] = &[
 const SINGLE_QUOTE_POINTS: &[u32] = &[
     0x2018, // left single quote
     0x2019, // right single quote
+    0x201A, // single low-9 quote (single-quote class per draft §4.4.4)
     0x201B, // single high-reversed-9
     0x2039, // single left guillemet
     0x203A, // single right guillemet
@@ -78,7 +80,6 @@ const SINGLE_QUOTE_POINTS: &[u32] = &[
 
 /// Phase 3: double quotes -> ASCII double quote.
 const DOUBLE_QUOTE_POINTS: &[u32] = &[
-    0x201A, // single low-9 quote (intentionally mapped to double)
     0x201C, // left double quote
     0x201D, // right double quote
     0x201E, // low double quote
@@ -201,18 +202,37 @@ pub fn normalize_text(text: &str, preserve_whitespace: bool) -> String {
 /// Canonical text, ready to be hashed. Trimmed of leading/trailing
 /// whitespace.
 pub fn extract_canonical_text(html: &str) -> String {
+    extract_canonical_text_with_base_url(html, None)
+}
+
+/// Extract canonical text from an HTML fragment, resolving relative signed
+/// semantic URL attributes against `base_url` when supplied.
+pub fn extract_canonical_text_with_base_url(html: &str, base_url: Option<&str>) -> String {
+    try_extract_canonical_text_with_base_url(html, base_url)
+        .expect("attribute-canonicalization-failed")
+}
+
+/// Fallible form of [`extract_canonical_text_with_base_url`].
+pub fn try_extract_canonical_text_with_base_url(
+    html: &str,
+    base_url: Option<&str>,
+) -> Result<String, String> {
     let document = Html::parse_fragment(html);
+    let base = match base_url {
+        Some(raw) => Some(Url::parse(raw).map_err(|_| "attribute-canonicalization-failed".to_string())?),
+        None => None,
+    };
 
     let mut out = String::new();
-    walk(document.tree.root(), &mut out);
+    walk(document.tree.root(), &mut out, base.as_ref())?;
 
-    normalize_text(&out, false).trim().to_string()
+    Ok(finalize_parts(&out))
 }
 
 fn is_excluded_tag(name: &str) -> bool {
     matches!(
         name,
-        "script" | "style" | "meta" | "link" | "head" | "noscript"
+        "script" | "style" | "meta" | "link" | "head" | "noscript" | "template" | "iframe"
     )
 }
 
@@ -223,11 +243,10 @@ fn is_block_tag(name: &str) -> bool {
             | "article"
             | "aside"
             | "blockquote"
-            | "canvas"
-            | "dd"
+            | "details"
+            | "dialog"
             | "div"
             | "dl"
-            | "dt"
             | "fieldset"
             | "figcaption"
             | "figure"
@@ -240,58 +259,151 @@ fn is_block_tag(name: &str) -> bool {
             | "h5"
             | "h6"
             | "header"
+            | "hgroup"
             | "hr"
             | "li"
             | "main"
             | "nav"
-            | "noscript"
             | "ol"
-            | "output"
             | "p"
             | "pre"
             | "section"
             | "table"
-            | "tfoot"
-            | "thead"
             | "tr"
             | "td"
             | "th"
             | "ul"
-            | "video"
     )
 }
 
-fn walk<'a>(node: NodeRef<'a, Node>, out: &mut String) {
-    for child in node.children() {
-        match child.value() {
-            Node::Text(t) => {
-                out.push_str(&t.text);
-            }
-            Node::Element(e) => {
-                let name = e.name();
-                if is_excluded_tag(name) {
-                    continue;
+fn walk<'a>(root: NodeRef<'a, Node>, out: &mut String, base_url: Option<&Url>) -> Result<(), String> {
+    // Iterative depth-first walk with an explicit heap stack, equivalent to the
+    // natural recursion but bounded by heap rather than the call stack. Real-world
+    // DOMs can nest deeply enough to overflow a native thread stack (a latent
+    // denial-of-service on the signer/verifier) and, more acutely, the small
+    // WebAssembly stack; an explicit stack removes both failure modes while
+    // producing byte-identical output.
+    //
+    // Per element the emission order is: attribute records, then the element's
+    // children, then a block boundary. The `CloseBlock` marker defers the trailing
+    // boundary until after the children have been processed (post-order).
+    enum Work<'x> {
+        Enter(NodeRef<'x, Node>),
+        CloseBlock,
+    }
+    let mut stack: Vec<Work<'a>> = Vec::new();
+    let kids: Vec<_> = root.children().collect();
+    for child in kids.into_iter().rev() {
+        stack.push(Work::Enter(child));
+    }
+    while let Some(item) = stack.pop() {
+        match item {
+            Work::CloseBlock => out.push('\n'),
+            Work::Enter(node) => match node.value() {
+                Node::Text(t) => out.push_str(&normalize_text(&t.text, false)),
+                Node::Element(e) => {
+                    let name = e.name();
+                    if is_excluded_tag(name) {
+                        continue;
+                    }
+                    let block = is_block_tag(name);
+                    append_attribute_records(out, name, e, base_url)?;
+                    if name == "br" {
+                        out.push('\n');
+                        if block {
+                            out.push('\n');
+                        }
+                    } else {
+                        if block {
+                            stack.push(Work::CloseBlock);
+                        }
+                        let kids: Vec<_> = node.children().collect();
+                        for child in kids.into_iter().rev() {
+                            stack.push(Work::Enter(child));
+                        }
+                    }
                 }
-                let block = is_block_tag(name);
-                if block {
-                    out.push(' ');
-                }
-                walk(child, out);
-                if block {
-                    out.push(' ');
-                }
-            }
-            _ => {
                 // Comments, doctypes, processing instructions -- not signed.
-            }
+                _ => {}
+            },
         }
     }
+    Ok(())
+}
+
+fn append_attribute_records(
+    out: &mut String,
+    element_name: &str,
+    element: &scraper::node::Element,
+    base_url: Option<&Url>,
+) -> Result<(), String> {
+    for attr in ["href", "src", "alt", "aria-label"] {
+        let Some(raw) = element.attr(attr) else {
+            continue;
+        };
+        let value = if attr == "href" || attr == "src" {
+            canonicalize_url(raw, base_url)?
+        } else {
+            normalize_text(raw, false).trim().to_string()
+        };
+        if value.contains('\n') {
+            return Err("attribute-canonicalization-failed".to_string());
+        }
+        if !out.is_empty() && !out.chars().last().is_some_and(|c| c.is_whitespace()) {
+            out.push('\n');
+        }
+        out.push_str("@attr:");
+        out.push_str(element_name);
+        out.push(':');
+        out.push_str(attr);
+        out.push(':');
+        out.push_str(&value);
+        out.push('\n');
+    }
+    Ok(())
+}
+
+fn canonicalize_url(raw: &str, base_url: Option<&Url>) -> Result<String, String> {
+    // The `url` crate is a WHATWG URL implementation: parsing already
+    // lowercases scheme + host, punycodes IDN hosts, resolves dot-segments,
+    // strips default ports, and preserves query + fragment.
+    let parsed = match Url::parse(raw) {
+        Ok(url) => url,
+        Err(_) => {
+            // Relative reference: it can only be resolved against a base. The
+            // draft (§4.3.2) requires a hard failure when no base is available,
+            // not a silent skip.
+            let Some(base) = base_url else {
+                return Err("attribute-canonicalization-failed".to_string());
+            };
+            base.join(raw)
+                .map_err(|_| "attribute-canonicalization-failed".to_string())?
+        }
+    };
+    Ok(parsed.to_string())
+}
+
+fn finalize_parts(text: &str) -> String {
+    let mut text = text.to_string();
+    while text.contains("  ") {
+        text = text.replace("  ", " ");
+    }
+    while text.contains(" \n") || text.contains("\n ") || text.contains("\t\n") || text.contains("\n\t") {
+        text = text.replace(" \n", "\n");
+        text = text.replace("\n ", "\n");
+        text = text.replace("\t\n", "\n");
+        text = text.replace("\n\t", "\n");
+    }
+    while text.contains("\n\n") {
+        text = text.replace("\n\n", "\n");
+    }
+    text.trim_matches(&[' ', '\n'][..]).to_string()
 }
 
 /// Compute the canonical serialization of a claim map.
 ///
 /// Each name and value is run through [`normalize_text`] and entries are
-/// sorted lexically by name, then joined by `\n` as `name=value` pairs.
+/// sorted lexically by name, then joined by `\n` as `name:value` pairs.
 /// The caller is responsible for hashing the result.
 ///
 /// `BTreeMap` is used as the input type because its iteration order is
@@ -301,13 +413,44 @@ fn walk<'a>(node: NodeRef<'a, Node>, out: &mut String) {
 pub fn canonicalize_claims(claims: &BTreeMap<String, String>) -> String {
     let mut entries: Vec<(String, String)> = claims
         .iter()
-        .map(|(k, v)| (normalize_text(k, false), normalize_text(v, false)))
+        .map(|(k, v)| {
+            (
+                normalize_text(k, false).trim().to_string(),
+                normalize_text(v, false).trim().to_string(),
+            )
+        })
         .collect();
     // Re-sort after normalization in case normalization changes name order.
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     entries
         .into_iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|(k, v)| format!("{}:{}\n", k, v))
+        .collect::<String>()
+}
+
+/// Like [`canonicalize_claims`] but enforces the draft's MUST-fail rules:
+/// an empty normalized name is `claim-malformed`, and two names that
+/// normalize to the same value are `claim-duplicate`. Names are compared and
+/// sorted by their UTF-8 byte sequence (`String` ordering).
+pub fn canonicalize_claims_checked(
+    claims: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let mut entries: Vec<(String, String)> = Vec::with_capacity(claims.len());
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (k, v) in claims {
+        let name = normalize_text(k, false).trim().to_string();
+        let value = normalize_text(v, false).trim().to_string();
+        if name.is_empty() {
+            return Err("claim-malformed".to_string());
+        }
+        if !seen.insert(name.clone()) {
+            return Err("claim-duplicate".to_string());
+        }
+        entries.push((name, value));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries
+        .into_iter()
+        .map(|(k, v)| format!("{}:{}\n", k, v))
+        .collect::<String>())
 }

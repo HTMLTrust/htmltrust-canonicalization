@@ -1,0 +1,8 @@
+{
+  "name": "empty-name-fails",
+  "description": "A name that normalizes to the empty string MUST fail claim-malformed.",
+  "input": {
+    " ": "x"
+  },
+  "error": "claim-malformed"
+}

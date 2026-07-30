@@ -1,0 +1,6 @@
+{
+  "name": "br-soft-line-break",
+  "description": "The br element emits a soft line-feed break at its position.",
+  "input": "<p>line1<br/>line2</p>",
+  "expected": "line1\nline2"
+}

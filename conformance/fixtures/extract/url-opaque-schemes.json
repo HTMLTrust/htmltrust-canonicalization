@@ -1,0 +1,6 @@
+{
+  "name": "url-opaque-schemes",
+  "description": "Opaque URLs (mailto/tel/javascript/data) are accepted per the WHATWG URL parser and serialized verbatim (scheme lowercased), not rejected.",
+  "input": "<p>mail <a href=\"mailto:a@b.com\">m</a> tel <a href=\"tel:+1-555\">t</a> js <a href=\"javascript:void(0)\">j</a></p>",
+  "expected": "mail @attr:a:href:mailto:a@b.com\nm tel @attr:a:href:tel:+1-555\nt js @attr:a:href:javascript:void(0)\nj"
+}

@@ -82,7 +82,7 @@ Every fixture is a self-contained JSON object:
 - `input` is the raw value passed to the binding function:
   - `normalize/` -- a string
   - `extract/` -- an HTML fragment as a string
-  - `claims/` -- a JSON object of `name -> value` pairs
+  - `claims/` -- a JSON object of `name -> value` pairs serialized as `name:content\n`
 - `expected` is the byte-exact output the function must return.
 - Both `input` and `expected` may contain literal non-ASCII characters
   (JSON allows it). Use Unicode escape sequences (`\uXXXX`) when the
@@ -97,10 +97,10 @@ The recommended flow:
    filename and the `name` field must match (e.g. `my-case.json` with
    `"name": "my-case"`).
 
-2. **Populate `expected` from a known-good runner.** Python is the
-   canonical source of truth for `extract/` and `claims/`, because it's
-   the binding with the richest HTML parser. For `normalize/` any
-   language works:
+2. **Populate `expected` from a known-good runner.** Python remains a
+   convenient source of truth for parser-heavy `extract/` cases. The current
+   JS, Go, PHP, Python, and Rust runners all cover the shared normalize,
+   extract, and claims suites when their toolchains are installed:
 
    ```sh
    python3 conformance/runners/run-python.py --update
@@ -125,26 +125,21 @@ The recommended flow:
 
 ## Binding coverage
 
-The five bindings do not currently implement the same surface area.
-The runners report `SKIP` for fixtures their binding can't run.
+The five bindings now implement the shared normalize/extract/claims surface.
+The runners still report `SKIP` if a future fixture targets a function a
+binding cannot run.
 
 | Function                 | JS  | Go  | PHP | Python | Rust |
 |--------------------------|:---:|:---:|:---:|:------:|:----:|
 | `normalizeText`          | YES | YES | YES |  YES   | YES  |
-| `extractCanonicalText`   | --  | --  | --  |  YES   | YES  |
-| `canonicalizeClaims`     | --  | --  | --  |  YES   | YES  |
-
-The orchestrator's plan is to bring JS, Go, and PHP up to full
-coverage in subsequent branches. When that happens, drop the `SKIP`
-guard from those runners (search for `return [null, false]` or
-`return "", false, nil` or `() => null`).
+| `extractCanonicalText`   | YES | YES | YES |  YES   | YES  |
+| `canonicalizeClaims`     | YES | YES | YES |  YES   | YES  |
 
 ## Known divergences
 
-None at the time this suite was created. All four runnable languages
-(JS, Go, Python, Rust on this machine; PHP was not installed) agree
-byte-for-byte on every `normalize/` fixture, and Python and Rust agree
-byte-for-byte on every `extract/` and `claims/` fixture.
+None at the time of the current protocol cleanup. JS, Go, Python, and Rust
+agree byte-for-byte on every fixture on the current development machine; PHP
+was not installed locally for that run.
 
 If divergences appear in the future, add them here with the fixture
 name, the diverging language(s), and a one-line root-cause sketch.
@@ -158,12 +153,12 @@ NFKC compatibility forms, curly/CJK/guillemet quotation marks,
 dashes, ellipsis, ZWSP stripping, ZWNJ/ZWJ preservation, Arabic
 tatweel, BOM, bidi controls.
 
-`extract/` (12 cases): paragraphs, inline elements, block boundaries,
+`extract/` (14 cases): paragraphs, inline elements, block boundaries,
 nested structure, lists, tables, excluded elements (script/style/meta),
 entity decoding, inline anchors, mixed inline formatting,
-post-extraction normalization, headings.
+post-extraction normalization, headings, `br`, signed semantic attributes.
 
 `claims/` (7 cases): empty, single claim, multi-claim ordering, value
 normalization, name normalization, NFKC inside values, internal newlines.
 
-Total: 41 fixtures.
+Total: 43 fixtures.
