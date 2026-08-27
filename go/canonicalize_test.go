@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
@@ -174,11 +175,18 @@ func TestBuildSignatureBindingErrors(t *testing.T) {
 		{"a", "b", "", "d"},
 		{"a", "b", "https://example.com", ""},
 		{"a", "b", "example.com", "d"},
+		{"a", "b", "ftp://example.com", "d"},
 	}
 	for _, c := range cases {
 		if _, err := BuildSignatureBinding(c[0], c[1], c[2], c[3]); err == nil {
 			t.Errorf("expected error for inputs %v", c)
 		}
+	}
+}
+
+func TestValidateSerializedOriginIPv6(t *testing.T) {
+	if err := ValidateSerializedOrigin("https://[2001:db8::1]:8443"); err != nil {
+		t.Fatalf("valid IPv6 origin rejected: %v", err)
 	}
 }
 
@@ -280,6 +288,56 @@ func TestVerifySignatureECDSA(t *testing.T) {
 	}
 	if !ok {
 		t.Errorf("expected ecdsa signature to verify")
+	}
+}
+
+func TestVerifySignatureRegistryECDSA(t *testing.T) {
+	tests := []struct {
+		name      string
+		curve     elliptic.Curve
+		algorithm string
+		width     int
+		digest    func(string) []byte
+	}{
+		{"P-256", elliptic.P256(), "ecdsa-p256", 32, func(message string) []byte { sum := sha256.Sum256([]byte(message)); return sum[:] }},
+		{"P-384", elliptic.P384(), "ecdsa-p384", 48, func(message string) []byte { sum := sha512.Sum384([]byte(message)); return sum[:] }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			priv, err := ecdsa.GenerateKey(tc.curve, rand.Reader)
+			if err != nil {
+				t.Fatalf("ecdsa.GenerateKey: %v", err)
+			}
+			message := "registry ecdsa"
+			r, s, err := ecdsa.Sign(rand.Reader, priv, tc.digest(message))
+			if err != nil {
+				t.Fatalf("ecdsa.Sign: %v", err)
+			}
+			sig := make([]byte, tc.width*2)
+			r.FillBytes(sig[:tc.width])
+			s.FillBytes(sig[tc.width:])
+			ok, err := VerifySignature(message, EncodeBase64Unpadded(sig), encodePKIX(t, &priv.PublicKey), tc.algorithm)
+			if err != nil || !ok {
+				t.Fatalf("registry signature did not verify: ok=%v err=%v", ok, err)
+			}
+		})
+	}
+}
+
+func TestVerifySignatureRSAPSS(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	message := "rsa pss"
+	digest := sha256.Sum256([]byte(message))
+	sig, err := rsa.SignPSS(rand.Reader, priv, crypto.SHA256, digest[:], &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
+	if err != nil {
+		t.Fatalf("rsa.SignPSS: %v", err)
+	}
+	ok, err := VerifySignature(message, EncodeBase64Unpadded(sig), encodePKIX(t, &priv.PublicKey), "rsa-pss-sha256")
+	if err != nil || !ok {
+		t.Fatalf("PSS signature did not verify: ok=%v err=%v", ok, err)
 	}
 }
 

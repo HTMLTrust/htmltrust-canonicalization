@@ -18,8 +18,28 @@ class SignatureTest extends TestCase
     public function testBuildSignatureBindingFormatsCorrectly(): void
     {
         $this->assertSame(
-            'sha256:ABC:sha256:DEF:example.com:2025-05-01T00:00Z',
-            Signature::buildSignatureBinding('sha256:ABC', 'sha256:DEF', 'example.com', '2025-05-01T00:00Z')
+            'sha256:ABC:sha256:DEF:https://example.com:2025-05-01T00:00Z',
+            Signature::buildSignatureBinding('sha256:ABC', 'sha256:DEF', 'https://example.com', '2025-05-01T00:00Z')
+        );
+    }
+
+    public function testBuildSignatureBindingRejectsBareHostnameDomain(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Signature::buildSignatureBinding('sha256:ABC', 'sha256:DEF', 'example.com', '2025-05-01T00:00Z');
+    }
+
+    public function testBuildSignatureBindingRejectsNonHttpOrigin(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Signature::buildSignatureBinding('sha256:ABC', 'sha256:DEF', 'ftp://example.com', '2025-05-01T00:00Z');
+    }
+
+    public function testBuildSignatureBindingAcceptsIpv6Origin(): void
+    {
+        $this->assertSame(
+            'sha256:ABC:sha256:DEF:https://[2001:db8::1]:8443:2025-05-01T00:00Z',
+            Signature::buildSignatureBinding('sha256:ABC', 'sha256:DEF', 'https://[2001:db8::1]:8443', '2025-05-01T00:00Z')
         );
     }
 
@@ -35,10 +55,10 @@ class SignatureTest extends TestCase
     public function emptyFieldProvider(): array
     {
         return [
-            'empty contentHash' => ['', 'b', 'c', 'd'],
-            'empty claimsHash'  => ['a', '', 'c', 'd'],
+            'empty contentHash' => ['', 'b', 'https://example.com', 'd'],
+            'empty claimsHash'  => ['a', '', 'https://example.com', 'd'],
             'empty domain'      => ['a', 'b', '', 'd'],
-            'empty signedAt'    => ['a', 'b', 'c', ''],
+            'empty signedAt'    => ['a', 'b', 'https://example.com', ''],
         ];
     }
 
@@ -49,9 +69,40 @@ class SignatureTest extends TestCase
     public function testBuildEndorsementBinding(): void
     {
         $this->assertSame(
-            'sha256:XYZ:2025-05-01T00:00Z',
+            '{"endorsement":"sha256:XYZ","timestamp":"2025-05-01T00:00Z"}',
             Signature::buildEndorsementBinding('sha256:XYZ', '2025-05-01T00:00Z')
         );
+    }
+
+    public function testBuildEndorsementBindingFromDocumentOmitsSignature(): void
+    {
+        $this->assertSame(
+            '{"algorithm":"ed25519","endorsement":"sha256:XYZ","endorser":"did:web:alice.example","timestamp":"2025-05-01T00:00Z"}',
+            Signature::buildEndorsementBinding([
+                'endorser' => 'did:web:alice.example',
+                'endorsement' => 'sha256:XYZ',
+                'timestamp' => '2025-05-01T00:00Z',
+                'algorithm' => 'ed25519',
+                'signature' => 'ignored',
+            ])
+        );
+    }
+
+    public function testBuildEndorsementBindingSortsKeysByUtf16CodeUnits(): void
+    {
+        $astral = "\u{10000}";
+        $privateUse = "\u{E000}";
+        $binding = Signature::buildEndorsementBinding([
+            'endorser' => 'did:web:alice.example',
+            'endorsement' => 'sha256:XYZ',
+            'timestamp' => '2025-05-01T00:00Z',
+            'algorithm' => 'ed25519',
+            $privateUse => 2,
+            $astral => 1,
+        ]);
+        $astralEncoded = trim((string) json_encode($astral), '"');
+        $privateUseEncoded = trim((string) json_encode($privateUse), '"');
+        $this->assertLessThan(strpos($binding, $privateUseEncoded), strpos($binding, $astralEncoded));
     }
 
     public function testBuildEndorsementBindingRejectsEmpty(): void
@@ -64,16 +115,16 @@ class SignatureTest extends TestCase
     // verifySignature: ed25519 round trip via libsodium
     // ------------------------------------------------------------------
 
-    public function testVerifyEd25519RoundTripPaddedSignature(): void
+    public function testVerifyEd25519RejectsPaddedSignature(): void
     {
         $this->skipIfNoSodium();
 
         [$pem, $secret] = $this->makeEd25519KeypairPem();
-        $message   = 'sha256:ABC:sha256:DEF:example.com:2025-05-01T00:00Z';
+        $message   = 'sha256:ABC:sha256:DEF:https://example.com:2025-05-01T00:00Z';
         $signature = sodium_crypto_sign_detached($message, $secret);
         $b64       = base64_encode($signature); // padded
 
-        $this->assertTrue(Signature::verifySignature($message, $b64, $pem, 'ed25519'));
+        $this->assertFalse(Signature::verifySignature($message, $b64, $pem, 'ed25519'));
     }
 
     public function testVerifyEd25519RoundTripUnpaddedSignature(): void
@@ -94,7 +145,7 @@ class SignatureTest extends TestCase
 
         [$pem, $secret] = $this->makeEd25519KeypairPem();
         $message   = 'hello';
-        $signature = base64_encode(sodium_crypto_sign_detached($message, $secret));
+        $signature = rtrim(base64_encode(sodium_crypto_sign_detached($message, $secret)), '=');
 
         $this->assertTrue(Signature::verifySignature($message, $signature, $pem, 'ED25519'));
         $this->assertTrue(Signature::verifySignature($message, $signature, $pem, 'Ed25519'));
@@ -105,7 +156,7 @@ class SignatureTest extends TestCase
         $this->skipIfNoSodium();
 
         [$pem, $secret] = $this->makeEd25519KeypairPem();
-        $signature = base64_encode(sodium_crypto_sign_detached('original', $secret));
+        $signature = rtrim(base64_encode(sodium_crypto_sign_detached('original', $secret)), '=');
 
         $this->assertFalse(Signature::verifySignature('tampered', $signature, $pem, 'ed25519'));
     }
@@ -117,7 +168,7 @@ class SignatureTest extends TestCase
         [$pemA, $secretA] = $this->makeEd25519KeypairPem();
         [$pemB,]          = $this->makeEd25519KeypairPem();
 
-        $signature = base64_encode(sodium_crypto_sign_detached('hello', $secretA));
+        $signature = rtrim(base64_encode(sodium_crypto_sign_detached('hello', $secretA)), '=');
 
         $this->assertFalse(Signature::verifySignature('hello', $signature, $pemB, 'ed25519'));
     }
@@ -131,7 +182,7 @@ class SignatureTest extends TestCase
         $public  = sodium_crypto_sign_publickey($keypair);
 
         $message   = 'raw-key-test';
-        $signature = base64_encode(sodium_crypto_sign_detached($message, $secret));
+        $signature = rtrim(base64_encode(sodium_crypto_sign_detached($message, $secret)), '=');
 
         // Pass the raw 32-byte key directly (no PEM wrapping).
         $this->assertTrue(Signature::verifySignature($message, $signature, $public, 'ed25519'));
@@ -148,7 +199,7 @@ class SignatureTest extends TestCase
     public function testVerifyUnknownAlgorithmThrows(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        Signature::verifySignature('msg', base64_encode('xx'), 'irrelevant', 'frobnicate');
+        Signature::verifySignature('msg', rtrim(base64_encode('xx'), '='), 'irrelevant', 'frobnicate');
     }
 
     // ------------------------------------------------------------------
@@ -173,10 +224,33 @@ class SignatureTest extends TestCase
         $message = 'ecdsa-test';
         $sig     = '';
         $this->assertTrue(openssl_sign($message, $sig, $key, OPENSSL_ALGO_SHA256));
-        $b64 = base64_encode($sig);
+        $b64 = rtrim(base64_encode($sig), '=');
 
         $this->assertTrue(Signature::verifySignature($message, $b64, $pem, 'ecdsa'));
         $this->assertFalse(Signature::verifySignature('tampered', $b64, $pem, 'ecdsa'));
+    }
+
+    public function testVerifyEcdsaP256UsesP1363WireFormat(): void
+    {
+        if (!function_exists('openssl_pkey_new')) {
+            $this->markTestSkipped('openssl extension not available');
+        }
+        $key = openssl_pkey_new([
+            'private_key_type' => OPENSSL_KEYTYPE_EC,
+            'curve_name'       => 'prime256v1',
+        ]);
+        if ($key === false) {
+            $this->markTestSkipped('this OpenSSL build cannot generate prime256v1 keypairs');
+        }
+        $details = openssl_pkey_get_details($key);
+        $message = 'ecdsa-p1363-test';
+        $der = '';
+        $this->assertTrue(openssl_sign($message, $der, $key, OPENSSL_ALGO_SHA256));
+        $p1363 = $this->ecdsaDerToP1363($der, 32);
+        $b64 = rtrim(base64_encode($p1363), '=');
+
+        $this->assertTrue(Signature::verifySignature($message, $b64, $details['key'], 'ecdsa-p256'));
+        $this->assertFalse(Signature::verifySignature($message, rtrim(base64_encode($der), '='), $details['key'], 'ecdsa-p256'));
     }
 
     // ------------------------------------------------------------------
@@ -201,7 +275,7 @@ class SignatureTest extends TestCase
         $message = 'rsa-test';
         $sig     = '';
         $this->assertTrue(openssl_sign($message, $sig, $key, OPENSSL_ALGO_SHA256));
-        $b64 = base64_encode($sig);
+        $b64 = rtrim(base64_encode($sig), '=');
 
         $this->assertTrue(Signature::verifySignature($message, $b64, $pem, 'rsa'));
         $this->assertFalse(Signature::verifySignature($message . 'x', $b64, $pem, 'rsa'));
@@ -224,7 +298,7 @@ class SignatureTest extends TestCase
         // Round-trips via the verify path: signing with the secret and
         // verifying via the PEM should succeed.
         $secret    = sodium_crypto_sign_secretkey($keypair);
-        $signature = base64_encode(sodium_crypto_sign_detached('roundtrip', $secret));
+        $signature = rtrim(base64_encode(sodium_crypto_sign_detached('roundtrip', $secret)), '=');
         $this->assertTrue(Signature::verifySignature('roundtrip', $signature, $pem, 'ed25519'));
     }
 
@@ -243,6 +317,25 @@ class SignatureTest extends TestCase
         if (!function_exists('sodium_crypto_sign_keypair')) {
             $this->markTestSkipped('libsodium not available');
         }
+    }
+
+    private function ecdsaDerToP1363(string $der, int $componentBytes): string
+    {
+        $offset = 1;
+        $length = ord($der[$offset++]);
+        if (($length & 0x80) !== 0) {
+            $lengthBytes = $length & 0x7f;
+            $offset += $lengthBytes;
+        }
+        $this->assertSame(2, ord($der[$offset++]));
+        $rLength = ord($der[$offset++]);
+        $r = substr($der, $offset, $rLength);
+        $offset += $rLength;
+        $this->assertSame(2, ord($der[$offset++]));
+        $sLength = ord($der[$offset++]);
+        $s = substr($der, $offset, $sLength);
+        return str_pad(ltrim($r, "\x00"), $componentBytes, "\x00", STR_PAD_LEFT)
+            . str_pad(ltrim($s, "\x00"), $componentBytes, "\x00", STR_PAD_LEFT);
     }
 
     /**

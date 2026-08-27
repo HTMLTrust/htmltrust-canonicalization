@@ -218,7 +218,7 @@ function signEcdsa(privateKey, message, hash) {
   const { createSign } = nodeCrypto;
   const signer = createSign(hash);
   signer.update(message);
-  return signer.sign(privateKey, 'base64').replace(/=+$/, '');
+  return signer.sign({ key: privateKey, dsaEncoding: 'ieee-p1363' }, 'base64').replace(/=+$/, '');
 }
 
 await check('verifySignature ecdsa-p256 round-trip', async () => {
@@ -241,6 +241,15 @@ await check('verifySignature pins the ECDSA curve to the declared algorithm', as
   const sig = signEcdsa(privateKey, 'curve confusion', 'SHA384');
   const ok = await verifySignature('curve confusion', sig, pem, 'ecdsa-p256');
   assert(!ok, 'a P-384 key must not satisfy an ecdsa-p256 signature');
+});
+
+await check('verifySignature rejects DER ECDSA for registry algorithms', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  const signer = nodeCrypto.createSign('SHA256');
+  signer.update('wire format');
+  const der = signer.sign(privateKey, 'base64').replace(/=+$/, '');
+  assert(!(await verifySignature('wire format', der, pem, 'ecdsa-p256')), 'DER must fail');
 });
 
 await check('verifySignature rsa-pss-sha256 round-trip', async () => {
@@ -318,7 +327,7 @@ function startFixtureServer(routes) {
   });
 }
 
-const { publicKey: edPub } = generateKeyPairSync('ed25519');
+const { publicKey: edPub, privateKey: edPriv } = generateKeyPairSync('ed25519');
 const edPubPem = edPub.export({ type: 'spki', format: 'pem' });
 
 const fixtureServer = await startFixtureServer({
@@ -361,6 +370,24 @@ await check('directUrlResolver fetches http URL keyid', async () => {
   const resolved = await resolveKey(`${base}/key.json`, [directUrlResolver()]);
   assert(resolved, 'expected resolution');
   assertEq(resolved.algorithm, 'ed25519');
+});
+
+await check('directUrlResolver decodes canonical SPKI key documents', async () => {
+  const der = edPub.export({ type: 'spki', format: 'der' });
+  const encoded = der.toString('base64').replace(/=+$/, '');
+  const localFixture = await startFixtureServer({
+    '/key.json': () => ({
+      body: { publicKey: encoded, publicKeyEncoding: 'spki-der', algorithm: 'ed25519' },
+    }),
+  });
+  const localPort = localFixture.address().port;
+  const resolved = await resolveKey(`http://127.0.0.1:${localPort}/key.json`, [directUrlResolver()]);
+  await new Promise((r) => localFixture.close(r));
+  assert(resolved?.publicKeyPem.includes('BEGIN PUBLIC KEY'), 'expected decoded PEM');
+  assert(
+    await verifySignature('resolver-key', encodeBase64Unpadded(nodeSign(null, Buffer.from('resolver-key'), edPriv)), resolved.publicKeyPem, 'ed25519'),
+    'decoded key should verify',
+  );
 });
 
 await check('trustDirectoryResolver tries each base', async () => {

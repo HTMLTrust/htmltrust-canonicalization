@@ -44,6 +44,7 @@ class Signature
         if ($domain === '') {
             throw new InvalidArgumentException('domain must be non-empty');
         }
+        self::validateSerializedOrigin($domain);
         if ($signedAt === '') {
             throw new InvalidArgumentException('signedAt must be non-empty');
         }
@@ -52,23 +53,75 @@ class Signature
     }
 
     /**
-     * Build the canonical endorsement-binding string per spec §2.5:
-     *
-     *     {endorsement}:{timestamp}
-     *
-     * Both fields are required.
+     * Validate the legacy-named domain field as a serialized Web origin.
      *
      * @throws InvalidArgumentException
      */
-    public static function buildEndorsementBinding(string $endorsement, string $timestamp): string
+    public static function validateSerializedOrigin(string $origin): string
     {
+        $parts = parse_url($origin);
+        if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            throw new InvalidArgumentException('domain must be a serialized Web origin');
+        }
+        foreach (['user', 'pass', 'path', 'query', 'fragment'] as $forbidden) {
+            if (array_key_exists($forbidden, $parts)) {
+                throw new InvalidArgumentException('domain must be a serialized Web origin');
+            }
+        }
+        $scheme = strtolower((string) $parts['scheme']);
+        if ($scheme !== 'http' && $scheme !== 'https') {
+            throw new InvalidArgumentException('domain must use the http or https scheme');
+        }
+        $host = strtolower(trim((string) $parts['host'], '[]'));
+        $serializedHost = strpos($host, ':') !== false ? '[' . $host . ']' : $host;
+        $canonical = $scheme . '://' . $serializedHost;
+        if (isset($parts['port'])) {
+            $port = (int) $parts['port'];
+            if (!(($scheme === 'http' && $port === 80) || ($scheme === 'https' && $port === 443))) {
+                $canonical = $scheme . '://' . $serializedHost . ':' . $port;
+            }
+        }
+        if ($canonical !== $origin) {
+            throw new InvalidArgumentException('domain must use canonical serialized origin form: ' . $canonical);
+        }
+        return $origin;
+    }
+
+    /**
+     * Build the canonical endorsement signing payload: deterministic JSON
+     * with object keys sorted and the signature field omitted.
+     *
+     * @throws InvalidArgumentException
+     */
+    public static function buildEndorsementBinding($endorsement, ?string $timestamp = null): string
+    {
+        if (is_array($endorsement)) {
+            return self::canonicalizeEndorsementDocument($endorsement);
+        }
         if ($endorsement === '') {
             throw new InvalidArgumentException('endorsement must be non-empty');
         }
-        if ($timestamp === '') {
+        if ($timestamp === null || $timestamp === '') {
             throw new InvalidArgumentException('timestamp must be non-empty');
         }
-        return $endorsement . ':' . $timestamp;
+        return self::canonicalJson([
+            'endorsement' => $endorsement,
+            'timestamp' => $timestamp,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $endorsement
+     */
+    public static function canonicalizeEndorsementDocument(array $endorsement): string
+    {
+        unset($endorsement['signature']);
+        foreach (['endorser', 'endorsement', 'algorithm', 'timestamp'] as $required) {
+            if (!isset($endorsement[$required]) || !is_string($endorsement[$required]) || $endorsement[$required] === '') {
+                throw new InvalidArgumentException("endorsement {$required} must be non-empty");
+            }
+        }
+        return self::canonicalJson($endorsement);
     }
 
     /**
@@ -81,9 +134,7 @@ class Signature
      *   - "ecdsa":   uses openssl_verify with OPENSSL_ALGO_SHA256.
      *   - "rsa":     uses openssl_verify with OPENSSL_ALGO_SHA256.
      *
-     * The signature is accepted as either standard (padded) or unpadded
-     * Base64. Per the spec the wire format is unpadded Base64, but
-     * permitting padded input keeps things tolerant of well-meaning callers.
+     * The signature must be canonical unpadded standard Base64.
      *
      * @throws InvalidArgumentException for unknown algorithms or malformed
      *         inputs that prevent a meaningful verify attempt.
@@ -96,7 +147,7 @@ class Signature
     ): bool {
         $algo = strtolower(trim($algorithm));
 
-        $signature = self::base64DecodeFlexible($signatureB64);
+        $signature = self::base64DecodeCanonical($signatureB64);
         if ($signature === null) {
             return false;
         }
@@ -106,8 +157,19 @@ class Signature
                 return self::verifyEd25519($message, $signature, $publicKeyPem);
 
             case 'ecdsa':
+                return self::verifyOpenssl($message, $signature, $publicKeyPem, OPENSSL_ALGO_SHA256, OPENSSL_KEYTYPE_EC);
+
             case 'rsa':
-                return self::verifyOpenssl($message, $signature, $publicKeyPem);
+                return self::verifyOpenssl($message, $signature, $publicKeyPem, OPENSSL_ALGO_SHA256, OPENSSL_KEYTYPE_RSA);
+
+            case 'ecdsa-p256':
+                return self::verifyEcdsaP1363($message, $signature, $publicKeyPem, 'prime256v1', OPENSSL_ALGO_SHA256, 32);
+
+            case 'ecdsa-p384':
+                return self::verifyEcdsaP1363($message, $signature, $publicKeyPem, 'secp384r1', OPENSSL_ALGO_SHA384, 48);
+
+            case 'rsa-pkcs1-sha256':
+                return self::verifyOpenssl($message, $signature, $publicKeyPem, OPENSSL_ALGO_SHA256, OPENSSL_KEYTYPE_RSA);
 
             default:
                 throw new InvalidArgumentException("unsupported signature algorithm: {$algorithm}");
@@ -122,44 +184,38 @@ class Signature
      *   - "endorsement":  the targeted content-hash (signed payload)
      *   - "signature":    Base64 signature
      *   - "timestamp":    ISO-8601 timestamp
-     *   - "algorithm":    optional, default "ed25519"
+     *   - "algorithm":    signature algorithm identifier
      *
      * Returns true iff the endorser's resolved key validates the signature
-     * over `{endorsement}:{timestamp}`.
+     * over the deterministic JSON document with `signature` omitted.
      *
      * @param array<string, mixed> $endorsement
      * @param array<int, KeyResolver> $resolvers
      */
     public static function verifyEndorsement(array $endorsement, array $resolvers): bool
     {
-        foreach (['endorser', 'endorsement', 'signature', 'timestamp'] as $required) {
+        foreach (['endorser', 'endorsement', 'signature', 'timestamp', 'algorithm'] as $required) {
             if (!isset($endorsement[$required]) || !is_string($endorsement[$required]) || $endorsement[$required] === '') {
                 return false;
             }
         }
 
         $endorser   = $endorsement['endorser'];
-        $payload    = $endorsement['endorsement'];
         $signature  = $endorsement['signature'];
-        $timestamp  = $endorsement['timestamp'];
-        $algoOnWire = isset($endorsement['algorithm']) && is_string($endorsement['algorithm']) && $endorsement['algorithm'] !== ''
-            ? $endorsement['algorithm']
-            : 'ed25519';
+        $algoOnWire = $endorsement['algorithm'];
 
         $resolved = KeyResolution::resolveKey($endorser, $resolvers);
         if ($resolved === null) {
             return false;
         }
 
-        // Prefer the algorithm declared in the endorsement; fall back to the
-        // resolved key's hint if the endorsement omitted it. This mirrors
-        // the JS reference, where the wire format wins.
-        $algorithm = $algoOnWire;
-
-        $message = self::buildEndorsementBinding($payload, $timestamp);
+        if (!self::algorithmsCompatible($resolved->algorithm, $algoOnWire)) {
+            return false;
+        }
 
         try {
-            return self::verifySignature($message, $signature, $resolved->publicKeyPem, $algorithm);
+            $message = self::canonicalizeEndorsementDocument($endorsement);
+            return self::verifySignature($message, $signature, $resolved->publicKeyPem, $algoOnWire);
         } catch (InvalidArgumentException $e) {
             return false;
         }
@@ -170,28 +226,75 @@ class Signature
     // ------------------------------------------------------------------
 
     /**
-     * Decode a Base64 string that may or may not include "=" padding.
-     * Returns null on malformed input.
+     * Decode canonical unpadded standard Base64. Returns null on malformed or
+     * non-canonical input.
      */
-    private static function base64DecodeFlexible(string $input): ?string
+    private static function base64DecodeCanonical(string $input): ?string
     {
-        $input = trim($input);
         if ($input === '') {
             return null;
         }
-
-        // Pad to a multiple of 4 if the caller passed unpadded base64.
-        $remainder = strlen($input) % 4;
-        if ($remainder === 1) {
-            // 1 mod 4 is never valid base64.
+        if (preg_match('/[^A-Za-z0-9+\/]/', $input) === 1) {
             return null;
         }
+        $remainder = strlen($input) % 4;
+        if ($remainder === 1) {
+            return null;
+        }
+        $padded = $input;
         if ($remainder !== 0) {
-            $input .= str_repeat('=', 4 - $remainder);
+            $padded .= str_repeat('=', 4 - $remainder);
         }
 
-        $decoded = base64_decode($input, true);
-        return $decoded === false ? null : $decoded;
+        $decoded = base64_decode($padded, true);
+        if ($decoded === false) {
+            return null;
+        }
+        if (rtrim(base64_encode($decoded), '=') !== $input) {
+            return null;
+        }
+        return $decoded;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function canonicalJson($value): string
+    {
+        if (is_array($value)) {
+            if ($value === [] || array_keys($value) === range(0, count($value) - 1)) {
+                $items = array_map([self::class, 'canonicalJson'], $value);
+                return '[' . implode(',', $items) . ']';
+            }
+            uksort($value, static function ($left, $right): int {
+                return strcmp(
+                    mb_convert_encoding((string) $left, 'UTF-16BE', 'UTF-8'),
+                    mb_convert_encoding((string) $right, 'UTF-16BE', 'UTF-8')
+                );
+            });
+            $items = [];
+            foreach ($value as $key => $item) {
+                if ($item === null) {
+                    $items[] = json_encode((string) $key, JSON_UNESCAPED_SLASHES) . ':null';
+                } else {
+                    $items[] = json_encode((string) $key, JSON_UNESCAPED_SLASHES) . ':' . self::canonicalJson($item);
+                }
+            }
+            return '{' . implode(',', $items) . '}';
+        }
+        if (is_string($value)) {
+            return json_encode($value, JSON_UNESCAPED_SLASHES);
+        }
+        if (is_int($value) || is_float($value)) {
+            return json_encode($value, JSON_UNESCAPED_SLASHES);
+        }
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+        if ($value === null) {
+            return 'null';
+        }
+        throw new InvalidArgumentException('unsupported JSON value');
     }
 
     /**
@@ -265,7 +368,13 @@ class Signature
     /**
      * Verify ECDSA or RSA via OpenSSL using SHA-256.
      */
-    private static function verifyOpenssl(string $message, string $signature, string $publicKeyPem): bool
+    private static function verifyOpenssl(
+        string $message,
+        string $signature,
+        string $publicKeyPem,
+        int $digestAlgorithm,
+        ?int $expectedKeyType = null
+    ): bool
     {
         if (!function_exists('openssl_verify')) {
             throw new RuntimeException('ext-openssl is required for ecdsa/rsa verification');
@@ -275,7 +384,13 @@ class Signature
         if ($key === false) {
             return false;
         }
-        $result = openssl_verify($message, $signature, $key, OPENSSL_ALGO_SHA256);
+        if ($expectedKeyType !== null) {
+            $details = openssl_pkey_get_details($key);
+            if (!is_array($details) || $details['type'] !== $expectedKeyType) {
+                return false;
+            }
+        }
+        $result = openssl_verify($message, $signature, $key, $digestAlgorithm);
 
         // PHP < 8.0 may return a resource that needs free; PHP >= 8.0
         // garbage-collects the OpenSSLAsymmetricKey automatically.
@@ -285,6 +400,79 @@ class Signature
         }
 
         return $result === 1;
+    }
+
+    private static function verifyEcdsaP1363(
+        string $message,
+        string $signature,
+        string $publicKeyPem,
+        string $expectedCurve,
+        int $digestAlgorithm,
+        int $componentBytes
+    ): bool {
+        if (strlen($signature) !== $componentBytes * 2) {
+            return false;
+        }
+        $key = openssl_pkey_get_public($publicKeyPem);
+        if ($key === false) {
+            return false;
+        }
+        $details = openssl_pkey_get_details($key);
+        $curve = is_array($details) && isset($details['ec']['curve_name'])
+            ? strtolower((string) $details['ec']['curve_name'])
+            : '';
+        $acceptedCurves = $expectedCurve === 'prime256v1'
+            ? ['prime256v1', 'secp256r1']
+            : ['secp384r1'];
+        if (!in_array($curve, $acceptedCurves, true)) {
+            return false;
+        }
+        $der = self::p1363ToDer($signature, $componentBytes);
+        return openssl_verify($message, $der, $key, $digestAlgorithm) === 1;
+    }
+
+    private static function p1363ToDer(string $signature, int $componentBytes): string
+    {
+        $encodeInteger = static function (string $integer): string {
+            $integer = ltrim($integer, "\x00");
+            if ($integer === '') {
+                $integer = "\x00";
+            }
+            if ((ord($integer[0]) & 0x80) !== 0) {
+                $integer = "\x00" . $integer;
+            }
+            return "\x02" . chr(strlen($integer)) . $integer;
+        };
+        $r = $encodeInteger(substr($signature, 0, $componentBytes));
+        $s = $encodeInteger(substr($signature, $componentBytes));
+        return "\x30" . chr(strlen($r) + strlen($s)) . $r . $s;
+    }
+
+    private static function algorithmsCompatible(string $resolved, string $declared): bool
+    {
+        $resolved = strtolower($resolved);
+        $declared = strtolower($declared);
+        if ($resolved === $declared) {
+            return true;
+        }
+        $family = static function (string $algorithm): string {
+            if (strpos($algorithm, 'ecdsa') === 0) {
+                return 'ecdsa';
+            }
+            if (strpos($algorithm, 'rsa') === 0) {
+                return 'rsa';
+            }
+            return $algorithm;
+        };
+        $resolvedFamily = $family($resolved);
+        $declaredFamily = $family($declared);
+        if ($resolvedFamily !== $declaredFamily) {
+            return false;
+        }
+        if ($resolved === $resolvedFamily || $declared === $declaredFamily) {
+            return true;
+        }
+        return $resolvedFamily === 'rsa';
     }
 
     /**
