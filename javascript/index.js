@@ -751,7 +751,8 @@ async function fetchJson(url, fetchImpl) {
   const res = await f(url);
   if (!res.ok) return null;
   const ct = res.headers.get?.("content-type") ?? "";
-  if (ct.includes("application/json")) return await res.json();
+  const mediaType = ct.split(";", 1)[0].trim().toLowerCase();
+  if (mediaType === "application/json" || mediaType.endsWith("+json")) return await res.json();
   // Treat as raw PEM if content-type is text-ish
   return { _rawText: await res.text() };
 }

@@ -340,6 +340,10 @@ const fixtureServer = await startFixtureServer({
     },
   }),
   '/key.json': () => ({ body: { publicKey: edPubPem, algorithm: 'ed25519' } }),
+  '/key.vendor-json': () => ({
+    headers: { 'content-type': 'application/htmltrust-key+json; charset=utf-8' },
+    body: { publicKey: edPubPem, algorithm: 'ed25519' },
+  }),
   '/keys/abc123': () => ({ body: { publicKey: edPubPem, algorithm: 'ed25519' } }),
 });
 const port = fixtureServer.address().port;
@@ -370,6 +374,13 @@ await check('directUrlResolver fetches http URL keyid', async () => {
   const resolved = await resolveKey(`${base}/key.json`, [directUrlResolver()]);
   assert(resolved, 'expected resolution');
   assertEq(resolved.algorithm, 'ed25519');
+});
+
+await check('directUrlResolver accepts vendor JSON media types', async () => {
+  const resolved = await resolveKey(`${base}/key.vendor-json`, [directUrlResolver()]);
+  assert(resolved, 'expected resolution');
+  assertEq(resolved.algorithm, 'ed25519');
+  assert(resolved.publicKeyPem.includes('BEGIN PUBLIC KEY'), 'expected parsed key document');
 });
 
 await check('directUrlResolver decodes canonical SPKI key documents', async () => {
