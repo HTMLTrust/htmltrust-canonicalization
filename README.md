@@ -4,6 +4,29 @@ Canonical text normalization for the HTMLTrust content signing framework. Produc
 
 All implementations follow the same [specification](spec.md) and pass the same verification test suite.
 
+## Project status
+
+The current immutable release is **v0.2.2**, commit
+`79b0d52fecd958f8fc7ade713fe0799ca1e79626`. It is the version used by the
+HTMLTrust server, browser, CMS, and Hugo reference projects. The repository
+contains the shared conformance fixtures plus five bindings. Changes to the
+canonical output are protocol changes and must update every binding and the
+conformance suite together.
+
+For reproducible builds, pin the release tag or full commit. For example:
+
+```sh
+git clone https://github.com/HTMLTrust/htmltrust-canonicalization.git
+cd htmltrust-canonicalization
+git checkout 79b0d52fecd958f8fc7ade713fe0799ca1e79626
+```
+
+The JavaScript package can be installed from the same immutable commit:
+
+```sh
+npm install https://github.com/HTMLTrust/htmltrust-canonicalization/archive/79b0d52fecd958f8fc7ade713fe0799ca1e79626.tar.gz
+```
+
 ## Why Canonicalization?
 
 Content management systems silently transform text in ways that break naive hashing:
@@ -96,18 +119,57 @@ All implementations must produce identical output for these test pairs:
 | `word​word` (with ZWSP) | `wordword` | ✅ Yes |
 | `word‌word` (with ZWNJ) | `wordword` | ❌ No — ZWNJ is semantic |
 
-## Running Tests
+## Prerequisites
+
+The root JavaScript binding needs Node.js 22 or newer. The Go binding needs
+Go 1.25 or newer. The PHP binding needs PHP 7.2 or newer with `intl`,
+`mbstring`, `json`, `openssl`, and `sodium`, plus Composer. The Python
+binding needs Python 3.10 or newer and pip. The Rust binding needs Rust 1.74
+or newer. The full conformance command requires all five toolchains.
+
+## Running tests
+
+From the repository root, run the language-specific tests as needed:
 
 ```sh
-# JavaScript
-cd javascript && node test.js
+# JavaScript, no install step is needed
+node javascript/test.js
 
 # Go
-cd go && go test -v ./...
+(cd go && go test -v ./...)
 
 # PHP
-cd php && composer install && composer test
+(cd php && composer install --no-interaction && composer test)
+
+# Python
+(cd python && python3 -m pip install -e '.[dev]' && python3 -m pytest)
+
+# Rust
+(cd rust && cargo test)
 ```
+
+Run the public cross-language contract with one command:
+
+```sh
+REQUIRE_ALL_LANGUAGES=1 make conformance
+```
+
+Without `REQUIRE_ALL_LANGUAGES=1`, the runner reports unavailable toolchains
+as `SKIP`. Use `make conformance-<language>` when iterating on one binding.
+See [`conformance/README.md`](conformance/README.md) for fixture authoring
+and update rules.
+
+## Compatibility matrix
+
+| Consumer | Compatible release | Canonicalization source |
+|---|---|---|
+| JavaScript, server, CMS | `v0.2.2` | `79b0d52fecd958f8fc7ade713fe0799ca1e79626` |
+| Browser client `@htmltrust/browser-client` | `v0.1.2` | `v0.2.2` |
+| Hugo signer | current `main` | Go binding at the `v0.2.2` release commit |
+
+The browser client and server manifests pin the v0.2.2 release archive. Go
+consumers should pin the corresponding commit and keep the resulting
+pseudo-version in `go.mod`; do not replace it with an unconstrained branch.
 
 ## Companion Repositories
 
