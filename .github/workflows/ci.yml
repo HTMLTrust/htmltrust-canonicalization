@@ -27,6 +27,28 @@ jobs:
         working-directory: javascript
         run: node test.js
 
+      - name: Verify installable packages
+        run: |
+          mkdir -p "$RUNNER_TEMP/root-pack" "$RUNNER_TEMP/javascript-pack"
+          mkdir -p "$RUNNER_TEMP/root-install" "$RUNNER_TEMP/javascript-install"
+
+          npm pack --pack-destination "$RUNNER_TEMP/root-pack"
+          (cd javascript && npm pack --pack-destination "$RUNNER_TEMP/javascript-pack")
+
+          (
+            cd "$RUNNER_TEMP/root-install"
+            npm init -y
+            npm install "$RUNNER_TEMP/root-pack/"*.tgz --ignore-scripts --no-audit --no-fund
+            node --input-type=module -e 'import("@htmltrust/canonicalization").then(({ normalizeText }) => { if (normalizeText("A—B") !== "A-B") process.exit(1); })'
+          )
+
+          (
+            cd "$RUNNER_TEMP/javascript-install"
+            npm init -y
+            npm install "$RUNNER_TEMP/javascript-pack/"*.tgz --ignore-scripts --no-audit --no-fund
+            node --input-type=module -e 'import("@htmltrust/canonicalization").then(({ normalizeText }) => { if (normalizeText("A—B") !== "A-B") process.exit(1); })'
+          )
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: javascript-package
