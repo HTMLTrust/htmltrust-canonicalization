@@ -73,7 +73,10 @@ class ExtractCanonicalTextTest extends TestCase
     public function testImagesContributeSignedSemanticAttributes(): void
     {
         $html = '<p>Before<img src="x.png" alt="x">After</p>';
-        $this->assertSame("Before\n@attr:img:alt:x\nAfter", Canonicalize::extractCanonicalText($html));
+        $this->assertSame(
+            "Before\n@attr:img:src:https://example.com/articles/x.png\n@attr:img:alt:x\nAfter",
+            Canonicalize::extractCanonicalText($html, false, 'https://example.com/articles/post')
+        );
     }
 
     public function testEmptyAndAllMarkup(): void

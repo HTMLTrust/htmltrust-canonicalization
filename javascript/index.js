@@ -604,7 +604,12 @@ export async function verifySignature(message, signatureB64, publicKeyPem, algor
         if (keyType !== "ec") return false;
         const curve = String(publicKey.asymmetricKeyDetails?.namedCurve || "").toLowerCase();
         if (!EC_CURVES[algo].includes(curve)) return false;
-        return node.verify(EC_PARAMS[algo].nodeHash, msg, publicKey, sig);
+        return node.verify(
+          EC_PARAMS[algo].nodeHash,
+          msg,
+          { key: publicKey, dsaEncoding: "ieee-p1363" },
+          sig,
+        );
       }
       if (algo === "rsa" || algo === "rsa-pkcs1-sha256") {
         if (keyType !== "rsa") return false;
@@ -670,6 +675,29 @@ function pemToBytes(pem) {
   return base64ToBytesFlexible(body);
 }
 
+function spkiBase64ToPem(value) {
+  const bytes = decodeCanonicalBase64(value);
+  const encoded = encodeBase64Unpadded(bytes);
+  const padded = encoded + "===".slice((encoded.length + 3) % 4);
+  const lines = padded.match(/.{1,64}/g) || [];
+  return `-----BEGIN PUBLIC KEY-----\n${lines.join("\n")}\n-----END PUBLIC KEY-----\n`;
+}
+
+function pemFromKeyDocument(document) {
+  if (!document || typeof document !== "object") return null;
+  if (typeof document.publicKeyPem === "string" && document.publicKeyPem.includes("BEGIN PUBLIC KEY")) {
+    return document.publicKeyPem;
+  }
+  if (typeof document.publicKey === "string") {
+    if (document.publicKey.includes("BEGIN PUBLIC KEY")) return document.publicKey;
+    if (document.publicKeyEncoding === "spki-der") return spkiBase64ToPem(document.publicKey);
+  }
+  if (typeof document.key === "string" && document.key.includes("BEGIN PUBLIC KEY")) {
+    return document.key;
+  }
+  return null;
+}
+
 // === Keyid resolution (spec §2.2) ===
 //
 // Three pluggable resolvers. None is privileged; callers compose them in
@@ -723,7 +751,8 @@ async function fetchJson(url, fetchImpl) {
   const res = await f(url);
   if (!res.ok) return null;
   const ct = res.headers.get?.("content-type") ?? "";
-  if (ct.includes("application/json")) return await res.json();
+  const mediaType = ct.split(";", 1)[0].trim().toLowerCase();
+  if (mediaType === "application/json" || mediaType.endsWith("+json")) return await res.json();
   // Treat as raw PEM if content-type is text-ish
   return { _rawText: await res.text() };
 }
@@ -792,7 +821,7 @@ export function directUrlResolver(opts = {}) {
       if (data._rawText) {
         return { keyid, publicKeyPem: data._rawText.trim(), algorithm: "ed25519" };
       }
-      const pem = data.publicKey || data.publicKeyPem || data.key;
+      const pem = pemFromKeyDocument(data);
       if (!pem) return null;
       return {
         keyid,
@@ -827,7 +856,7 @@ export function trustDirectoryResolver(opts) {
           if (data._rawText) {
             return { keyid, publicKeyPem: data._rawText.trim(), algorithm: "ed25519" };
           }
-          const pem = data.publicKey || data.publicKeyPem || data.key;
+          const pem = pemFromKeyDocument(data);
           if (!pem) continue;
           return {
             keyid,
