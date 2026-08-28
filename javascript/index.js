@@ -284,10 +284,10 @@ function finalizeCanonicalParts(parts) {
  *   5. Decodes HTML entities.
  *   6. Applies the full text normalization pipeline (`normalizeText`).
  *
- * This implementation is regex-based and is sufficient for signed content
- * as typically produced by CMS platforms (blog posts, articles, news
- * stories). For pathological or adversarial input, a real DOM parser
- * should be used instead; the library API is compatible.
+ * The fragment is parsed with parse5, then walked as a DOM. A portable-profile
+ * validation pass rejects parser recovery and unsupported input before the
+ * parsed tree is traversed, so the same input produces the same result across
+ * bindings.
  *
  * @param {string} html - HTML fragment to canonicalize
  * @param {object} [options] - Options passed through to normalizeText
