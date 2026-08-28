@@ -83,7 +83,8 @@ const ELLIPSIS_RE = /\u2026/g;
  *
  * @param {string} text - Raw text content
  * @param {object} [options] - Options
- * @param {boolean} [options.preserveWhitespace=false] - Set true for <pre> content
+ * @param {boolean} [options.preserveWhitespace=false] - Legacy 0.2 option;
+ *   v1 callers must leave this false
  * @returns {string} Normalized text
  */
 export function normalizeText(text, options = {}) {
@@ -280,6 +281,10 @@ function finalizeCanonicalParts(parts) {
  *
  * @param {string} html - HTML fragment to canonicalize
  * @param {object} [options] - Options passed through to normalizeText
+ * @param {string|null} [options.baseUrl] - Resolved document base URL from
+ *   the source-snapshot layer; this binding does not discover `<base>`
+ * @param {boolean} [options.preserveWhitespace=false] - Legacy 0.2 option;
+ *   v1 callers must leave this false
  * @returns {string} Canonical text, ready to be hashed
  */
 export function extractCanonicalText(html, options = {}) {
@@ -451,7 +456,10 @@ function validatePortableSource(source) {
       continue;
     }
     const attrs = parseAttributesWithDuplicateCheck(token);
-    if (!VOID_TAGS.has(name) && !/\/\s*>$/.test(token)) {
+    if (!VOID_TAGS.has(name) && hasSelfClosingFlag(token)) {
+      throw new Error("parser-profile-unsupported");
+    }
+    if (!VOID_TAGS.has(name) && !hasSelfClosingFlag(token)) {
       stack.push(name);
       if (stack.length > MAX_ELEMENT_DEPTH) throw new Error("resource-limit-exceeded");
       scanState.rawName = isRawTextElement(name) ? name : null;
@@ -487,6 +495,17 @@ function parseAttributesWithDuplicateCheck(tag) {
     attrs.add(name);
   }
   return attrs;
+}
+
+function hasSelfClosingFlag(tag) {
+  const end = tag.length - 1;
+  if (end < 0 || tag[end] !== ">") return false;
+  let slash = end - 1;
+  while (slash >= 0 && /\s/.test(tag[slash])) slash--;
+  if (slash < 0 || tag[slash] !== "/") return false;
+  const prefix = tag.slice(0, slash);
+  if (/\s$/.test(prefix)) return true;
+  return /^<\s*[a-z][^\t\n\f\r \/>]*$/i.test(prefix);
 }
 
 function validateBaseURL(raw) {

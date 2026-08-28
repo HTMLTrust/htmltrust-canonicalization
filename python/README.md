@@ -40,9 +40,11 @@ serializer behavior affects signed bytes.
 ## Public API
 
 - `normalize_text(text, preserve_whitespace=False)` applies the Unicode and
-  punctuation normalization profile.
+  punctuation normalization profile. `preserve_whitespace=True` is a legacy
+  0.2 compatibility mode and is outside v1.
 - `extract_canonical_text(html, preserve_whitespace=False, base_url=None)`
-  parses HTML and emits signed text plus semantic attribute records.
+  parses HTML and emits signed text plus semantic attribute records. v1
+  callers must leave `preserve_whitespace` false.
 - `canonicalize_claims(claims)` emits the sorted and escaped claims byte
   sequence.
 - `extract_claims_from_signed_section(html)` reads direct-child claim metadata.
@@ -81,6 +83,11 @@ assert payload == '{"a":1e+30,"z":0}'
 Relative `href` and `src` attributes require `base_url`. The v1 safe-URL
 profile accepts HTTPS URLs and rejects credentials, control characters, and
 unsupported schemes.
+
+The caller's source-snapshot layer must compute the document base URL using the
+HTML Standard, including any `<base>` element, and pass that resolved URL as
+`base_url`. This binding does not discover `<base>` elements itself; relative
+signed URLs are rejected when no base URL is supplied.
 
 ## Package scope
 

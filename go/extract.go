@@ -215,6 +215,9 @@ func validatePortableHTML(source string) error {
 				seen[key] = true
 				more = next
 			}
+			if tt == htmlpkg.SelfClosingTagToken && !voidTags[name] {
+				return fmt.Errorf("parser-profile-unsupported")
+			}
 			if tt == htmlpkg.StartTagToken && !voidTags[name] {
 				if len(stack) >= maxElementDepth {
 					return fmt.Errorf("resource-limit-exceeded")

@@ -144,8 +144,8 @@ fn in_points(c: char, points: &[u32]) -> bool {
 ///
 /// * `text` -- raw text content (typically the output of
 ///   [`extract_canonical_text`]).
-/// * `preserve_whitespace` -- `true` for `<pre>` content where whitespace
-///   is significant; otherwise `false`.
+/// * `preserve_whitespace` -- legacy 0.2 compatibility option. v1 callers
+///   must pass `false`; v1 does not preserve `<pre>` whitespace verbatim.
 ///
 /// # Returns
 ///
@@ -232,8 +232,9 @@ pub fn try_normalize_text_v1(text: &[u8], preserve_whitespace: bool) -> Result<S
 /// # Arguments
 ///
 /// * `html` -- HTML fragment to canonicalize.
-/// * `options` -- extraction options, including `preserve_whitespace` and an
-///   optional HTTPS base URL for relative signed attributes.
+/// * `options` -- extraction options, including the legacy
+///   `preserve_whitespace` flag and an optional resolved HTTPS document base
+///   URL for relative signed attributes.
 ///
 /// # Returns
 ///
@@ -244,7 +245,9 @@ pub fn extract_canonical_text(html: &str) -> String {
 }
 
 /// Extract canonical text from an HTML fragment, resolving relative signed
-/// semantic URL attributes against `base_url` when supplied.
+/// semantic URL attributes against the resolved document `base_url` when
+/// supplied. The caller's source-snapshot layer computes that URL, including
+/// any HTML `<base>` element, before invoking this binding.
 pub fn extract_canonical_text_with_base_url(html: &str, base_url: Option<&str>) -> String {
     extract_canonical_text_with_options(
         html,
@@ -255,8 +258,8 @@ pub fn extract_canonical_text_with_base_url(html: &str, base_url: Option<&str>) 
     )
 }
 
-/// Extraction options. `preserve_whitespace` is passed to text-node
-/// normalization, matching the JavaScript `preserveWhitespace` option.
+/// Extraction options. `preserve_whitespace` is a legacy 0.2 compatibility
+/// flag passed to text-node normalization; v1 callers must leave it false.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ExtractOptions<'a> {
     pub preserve_whitespace: bool,
@@ -545,7 +548,9 @@ fn preflight_source(html: &str) -> Result<(), String> {
             if stack.pop().as_deref() != Some(name.as_str()) {
                 return Err(PARSER_UNSUPPORTED.to_string());
             }
-        } else if !VOID.contains(&name.as_str()) && !html[i..=end].ends_with("/>") {
+        } else if !VOID.contains(&name.as_str()) && has_self_closing_suffix(&html[i..=end]) {
+            return Err(PARSER_UNSUPPORTED.to_string());
+        } else if !VOID.contains(&name.as_str()) {
             if stack.len() >= MAX_ELEMENT_DEPTH {
                 return Err(RESOURCE_LIMIT.to_string());
             }
@@ -557,6 +562,32 @@ fn preflight_source(html: &str) -> Result<(), String> {
         return Err(PARSER_UNSUPPORTED.to_string());
     }
     Ok(())
+}
+
+fn has_self_closing_suffix(tag: &str) -> bool {
+    let suffix = tag.trim_end();
+    if !suffix.ends_with('>') {
+        return false;
+    }
+    let before_gt = suffix[..suffix.len() - 1].trim_end();
+    let Some(prefix) = before_gt.strip_suffix('/') else {
+        return false;
+    };
+    if prefix.chars().last().is_some_and(char::is_whitespace) {
+        return true;
+    }
+    let mut chars = prefix.chars();
+    if chars.next() != Some('<') {
+        return false;
+    }
+    while chars.next().is_some_and(|c| c.is_ascii_whitespace()) {}
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    !chars.any(|c| c.is_ascii_whitespace() || matches!(c, '/' | '>'))
 }
 
 fn reference_end(bytes: &[u8], start: usize) -> Option<usize> {

@@ -46,10 +46,12 @@ var ellipsisRE = regexp.MustCompile("\u2026")
 
 // Options controls normalization behavior.
 type Options struct {
-	// PreserveWhitespace skips whitespace collapsing (for <pre> content).
+	// PreserveWhitespace is a legacy 0.2 compatibility option. v1 callers must
+	// leave it false; v1 does not preserve verbatim <pre> whitespace.
 	PreserveWhitespace bool
-	// BaseURL is the signed document URL used to resolve relative href/src
-	// signed semantic attributes during HTML extraction.
+	// BaseURL is the resolved document base URL used to resolve relative
+	// href/src signed semantic attributes during HTML extraction. The caller's
+	// source-snapshot layer computes it, including any HTML <base> element.
 	BaseURL string
 }
 

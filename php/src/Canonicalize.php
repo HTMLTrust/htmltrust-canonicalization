@@ -85,7 +85,8 @@ class Canonicalize
      *   8. Language-specific handling (NFKC + preserve ZWNJ/ZWJ)
      *
      * @param string $text Raw text content.
-     * @param bool   $preserveWhitespace Set true for <pre> content.
+     * @param bool   $preserveWhitespace Legacy 0.2 option; v1 callers must
+     *                                   leave this false.
      * @return string Normalized text.
      */
     public static function normalizeText(string $text, bool $preserveWhitespace = false): string
@@ -255,10 +256,11 @@ class Canonicalize
      * Mirrors javascript/index.js:extractCanonicalText. See spec §2.1.
      *
      * @param string $html HTML fragment to canonicalize.
-     * @param bool   $preserveWhitespace Forwarded to normalizeText (use true
-     *               for `<pre>` content that must retain whitespace).
-     * @param string|null $baseUrl Signed document URL used to resolve relative
-     *               href/src signed semantic attributes.
+     * @param bool   $preserveWhitespace Forwarded to normalizeText. This is a
+     *               legacy 0.2 option; v1 callers must leave it false.
+     * @param string|null $baseUrl Resolved document base URL used to resolve
+     *               relative href/src signed semantic attributes. The caller
+     *               computes it from the source snapshot, including `<base>`.
      * @return string Canonical text, ready to be hashed.
      */
     public static function extractCanonicalText(string $html, bool $preserveWhitespace = false, ?string $baseUrl = null): string
@@ -374,7 +376,10 @@ class Canonicalize
                 }
                 $seen[$key] = true;
             }
-            if (!self::isVoidElement($name) && preg_match('#/\s*>$#', $trimmed) !== 1) {
+            if (!self::isVoidElement($name) && self::hasSelfClosingFlag($trimmed)) {
+                throw new \InvalidArgumentException('parser-profile-unsupported');
+            }
+            if (!self::isVoidElement($name) && !self::hasSelfClosingFlag($trimmed)) {
                 if (count($stack) >= 256) {
                     throw new \InvalidArgumentException('resource-limit-exceeded');
                 }
@@ -779,6 +784,23 @@ class Canonicalize
     private static function isVoidElement(string $name): bool
     {
         return in_array($name, ['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'], true);
+    }
+
+    private static function hasSelfClosingFlag(string $token): bool
+    {
+        $trimmed = rtrim($token);
+        if (!str_ends_with($trimmed, '>')) {
+            return false;
+        }
+        $beforeEnd = rtrim(substr($trimmed, 0, -1));
+        if (!str_ends_with($beforeEnd, '/')) {
+            return false;
+        }
+        $prefix = substr($beforeEnd, 0, -1);
+        if ($prefix !== '' && preg_match('/\s$/u', $prefix) === 1) {
+            return true;
+        }
+        return preg_match('#^<\s*[a-z][^\t\n\f\r />]*$#i', $prefix) === 1;
     }
 
     private static function isExcludedElement(string $name): bool

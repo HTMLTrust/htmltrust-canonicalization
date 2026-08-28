@@ -156,8 +156,9 @@ def normalize_text(text: str, preserve_whitespace: bool = False) -> str:
     Args:
         text: Raw text content (typically the output of
             ``extract_canonical_text``).
-        preserve_whitespace: Set ``True`` for ``<pre>`` content where
-            whitespace is significant. Defaults to ``False``.
+        preserve_whitespace: Legacy 0.2 compatibility option. v1 callers
+            must leave this ``False``; v1 does not preserve ``<pre>``
+            whitespace verbatim.
 
     Returns:
         Normalized text, suitable for hashing.

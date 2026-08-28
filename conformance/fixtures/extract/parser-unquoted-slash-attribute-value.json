@@ -1,0 +1,6 @@
+{
+  "name": "parser-unquoted-slash-attribute-value",
+  "description": "A slash in an unquoted attribute value is not a self-closing flag.",
+  "input": "<signed-section><p data=/ >Text</p></signed-section>",
+  "expected": "Text"
+}

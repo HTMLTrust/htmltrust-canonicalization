@@ -1,0 +1,6 @@
+{
+  "name": "parser-self-closing-nonvoid",
+  "description": "A non-void element with a self-closing flag is a parser error outside the portable profile.",
+  "input": "<signed-section><p/>Text</signed-section>",
+  "error": "parser-profile-unsupported"
+}
