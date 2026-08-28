@@ -1,0 +1,6 @@
+{
+  "name": "parser-self-closing-nonvoid-boolean-attribute",
+  "description": "A non-void self-closing flag after a boolean attribute remains a parser error.",
+  "input": "<signed-section><p hidden/>Text</signed-section>",
+  "error": "parser-profile-unsupported"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "parser-self-closing-nonvoid-quoted-attribute",
+  "description": "A non-void self-closing flag after a quoted attribute remains a parser error.",
+  "input": "<signed-section><p data-value=\"x\"/>Text</signed-section>",
+  "error": "parser-profile-unsupported"
+}
