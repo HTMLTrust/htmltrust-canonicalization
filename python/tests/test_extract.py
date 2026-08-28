@@ -58,6 +58,13 @@ def test_excluded_preflight_scanner_does_not_backtrack_on_unterminated_tag():
         extract_canonical_text(source)
 
 
+def test_source_depth_scanner_does_not_backtrack_on_unterminated_quote():
+    """Repeated quoted attributes must not make malformed-tag recovery grow."""
+    source = "<p>before</p><img " + ('data-x="x" ' * 8) + "style='x<p>after</p>"
+    with pytest.raises(ValueError, match="parser-profile-unsupported"):
+        extract_canonical_text(source)
+
+
 def test_entity_decoding():
     """HTML entities must be decoded by the parser."""
     assert (
