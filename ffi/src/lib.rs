@@ -174,7 +174,7 @@ mod capi {
                     Some(bytes) => match std::str::from_utf8(bytes) {
                         Ok(base) => Some(base),
                         Err(_) => {
-                            let bytes = b"invalid-utf8".to_vec().into_boxed_slice();
+                            let bytes = b"parser-profile-unsupported".to_vec().into_boxed_slice();
                             *out_len = bytes.len();
                             *out = Box::into_raw(bytes) as *mut u8;
                             return 1;
@@ -190,7 +190,7 @@ mod capi {
                     },
                 )
             }
-            Err(_) => Err("invalid-utf8".to_string()),
+            Err(_) => Err("parser-profile-unsupported".to_string()),
         };
         let (status, bytes) = match result {
             Ok(text) => (0, text.into_bytes()),
@@ -261,7 +261,8 @@ mod capi {
     }
 
     /// Normalize a UTF-8 byte string with the profile-v1 size limits.
-    /// Status 0 returns normalized text, status 1 returns `invalid-utf8` or
+    /// Status 0 returns normalized text, status 1 returns
+    /// `parser-profile-unsupported` or
     /// `resource-limit-exceeded`, and status 2 indicates invalid pointers.
     /// Valid output pointers are initialized before input decoding.
     #[no_mangle]

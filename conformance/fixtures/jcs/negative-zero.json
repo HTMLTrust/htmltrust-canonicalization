@@ -1,0 +1,6 @@
+{
+  "name": "negative-zero",
+  "description": "RFC 8785 erratum 7920 rejects a literal negative zero token.",
+  "input": "{\"value\":-0}",
+  "error": "jcs-number"
+}

@@ -10,6 +10,8 @@ contribute, where whitespace separators go) is identical.
 
 from __future__ import annotations
 
+import re
+
 from bs4 import BeautifulSoup, NavigableString, Tag
 from html5lib.html5parser import HTMLParser
 from pywhatwgurl import URL
@@ -499,7 +501,11 @@ def _escape_text(value: str) -> str:
 def _finalize_parts(text: str) -> str:
     while "  " in text:
         text = text.replace("  ", " ")
-    text = text.replace(" \n", "\n").replace("\n ", "\n")
+    # Finalization is shared with the other bindings, including for
+    # preserve_whitespace extraction. Spaces and tabs adjacent to a boundary
+    # are formatting introduced by the DOM walk and must not remain around
+    # the emitted line feed.
+    text = re.sub(r"[ \t]*\n[ \t]*", "\n", text)
     while "\n\n" in text:
         text = text.replace("\n\n", "\n")
     text = text.strip()

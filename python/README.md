@@ -74,7 +74,7 @@ content = extract_canonical_text(
 claims = canonicalize_claims({'License': 'CC-BY-4.0'})
 assert claims == 'License:CC-BY-4.0\n'
 
-payload = canonicalize_json_document('{"z":-0,"a":1e30}')
+payload = canonicalize_json_document('{"z":0,"a":1e30}')
 assert payload == '{"a":1e+30,"z":0}'
 ```
 

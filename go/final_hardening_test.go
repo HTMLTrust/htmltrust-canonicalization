@@ -102,6 +102,33 @@ func TestParserPreflightRejectsCommentsAndDeclarations(t *testing.T) {
 	}
 }
 
+func TestExtractionRejectsInvalidUTF8(t *testing.T) {
+	if _, err := ExtractCanonicalText(string([]byte{'<', 'p', '>', 0xff, '<', '/', 'p', '>'})); err == nil || !strings.Contains(err.Error(), "parser-profile-unsupported") {
+		t.Fatalf("invalid UTF-8 extraction error = %v, want parser-profile-unsupported", err)
+	}
+	if _, err := ExtractClaimsFromSignedSection(string([]byte{'<', 'm', 'e', 't', 'a', ' ', 0xff, '>'})); err == nil || !strings.Contains(err.Error(), "parser-profile-unsupported") {
+		t.Fatalf("invalid UTF-8 claim extraction error = %v, want parser-profile-unsupported", err)
+	}
+}
+
+func TestNormalizeTextCheckedRejectsInvalidUTF8WithParserProfileError(t *testing.T) {
+	if _, err := NormalizeTextChecked(string([]byte{0xff})); err == nil || !strings.Contains(err.Error(), "parser-profile-unsupported") {
+		t.Fatalf("NormalizeTextChecked error = %v, want parser-profile-unsupported", err)
+	}
+}
+
+func TestSourceLimitPrecedesInvalidUTF8Classification(t *testing.T) {
+	if _, err := NormalizeTextChecked(strings.Repeat(string([]byte{0xff}), maxResourceBytes+1)); err == nil || !strings.Contains(err.Error(), "resource-limit-exceeded") {
+		t.Fatalf("oversized invalid UTF-8 normalization error = %v, want resource-limit-exceeded", err)
+	}
+}
+
+func TestExtractionPreflightRunsBeforeInvalidBaseURL(t *testing.T) {
+	if _, err := ExtractCanonicalText("<p>unclosed", Options{BaseURL: "not a URL"}); err == nil || !strings.Contains(err.Error(), "parser-profile-unsupported") {
+		t.Fatalf("ExtractCanonicalText error = %v, want parser-profile-unsupported before base URL handling", err)
+	}
+}
+
 func TestRemoteKeyResolversBoundResponseBodies(t *testing.T) {
 	body := strings.Repeat("x", maxRemoteKeyBytes+1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -150,5 +177,23 @@ func TestJCSRejectsNestingBeyondLimit(t *testing.T) {
 	withinLimit := strings.Repeat("[", maxJSONDepth) + "0" + strings.Repeat("]", maxJSONDepth)
 	if _, err := CanonicalizeJSONDocument([]byte(withinLimit)); err != nil {
 		t.Fatalf("JSON at nesting limit rejected: %v", err)
+	}
+}
+
+func TestJCSMalformedJSONPrecedesSurrogateClassification(t *testing.T) {
+	if _, err := CanonicalizeJSONDocument([]byte(`{"value":"\uD800`)); err == nil || !strings.Contains(err.Error(), "jcs-invalid-json") {
+		t.Fatalf("malformed surrogate JSON error = %v, want jcs-invalid-json", err)
+	}
+}
+
+func TestExtractionAppliesOutputLimitAfterFinalization(t *testing.T) {
+	unit := `<p href="x" src="x" alt="x" aria-label="x"></p>`
+	source := strings.Repeat(unit, 10000)
+	output, err := ExtractCanonicalText(source, Options{BaseURL: "https://example.com/"})
+	if err != nil {
+		t.Fatalf("finalized output should be within the limit: %v", err)
+	}
+	if len(output) != 1039999 {
+		t.Fatalf("finalized output length = %d, want 1039999", len(output))
 	}
 }

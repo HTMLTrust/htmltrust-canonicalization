@@ -51,6 +51,10 @@ def _finite(value: str) -> float:
         raise ValueError("jcs-number") from exc
     if not math.isfinite(number):
         raise ValueError("jcs-number")
+    # RFC 8785 erratum 7920: reject negative zero, including negative values
+    # whose magnitude underflows to zero during binary64 parsing.
+    if value.startswith("-") and number == 0.0:
+        raise ValueError("jcs-number")
     return number
 
 
@@ -77,11 +81,17 @@ def canonicalize_json_document(document: str | bytes) -> str:
         raise TypeError("canonicalize_json_document expects raw JSON text")
     try:
         document_bytes = document.encode("utf-8", "strict") if isinstance(document, str) else bytes(document)
-        document_bytes.decode("utf-8", "strict")
-    except (UnicodeEncodeError, UnicodeDecodeError) as exc:
+    except UnicodeEncodeError as exc:
         raise ValueError("jcs-invalid-surrogate") from exc
     if len(document_bytes) > _MAX_DOCUMENT_BYTES:
         raise ValueError("resource-limit-exceeded")
+    try:
+        document_bytes.decode("utf-8", "strict")
+    except UnicodeDecodeError as exc:
+        # A bytes API receives source octets, so malformed UTF-8 is malformed
+        # JSON. A Python str containing an actual surrogate is handled above
+        # as a JCS surrogate violation instead.
+        raise ValueError("jcs-invalid-json") from exc
     _enforce_nesting_limit(document_bytes)
     try:
         value = json.loads(

@@ -60,19 +60,21 @@ var (
 // to line feeds, decodes entities, and runs the full text normalization
 // pipeline. The returned string is trimmed.
 func ExtractCanonicalText(html string, opts ...Options) (string, error) {
-	if len(html) > maxResourceBytes || !utf8.ValidString(html) {
+	if len(html) > maxResourceBytes {
 		return "", fmt.Errorf("resource-limit-exceeded")
+	}
+	if !utf8.ValidString(html) {
+		return "", fmt.Errorf("parser-profile-unsupported")
 	}
 	var o Options
 	if len(opts) > 0 {
 		o = opts[0]
 	}
-	base, err := parseBaseURL(o.BaseURL)
-	if err != nil {
+	if err := validatePortableHTML(html); err != nil {
 		return "", err
 	}
-
-	if err := validatePortableHTML(html); err != nil {
+	base, err := parseBaseURL(o.BaseURL)
+	if err != nil {
 		return "", err
 	}
 	fragment, err := htmlpkg.ParseFragment(strings.NewReader(html), &htmlpkg.Node{Type: htmlpkg.ElementNode, Data: "div", DataAtom: atom.Div})
@@ -91,11 +93,14 @@ func ExtractCanonicalText(html string, opts ...Options) (string, error) {
 }
 
 // ExtractClaimsFromSignedSection returns claim metadata from direct child meta
-// elements. If the fragment contains a top-level signed-section, that element
-// supplies the children; otherwise the fragment is treated as section inner HTML.
+// elements of the first signed-section anywhere in the fragment. If there is
+// no signed-section, the fragment is treated as section inner HTML.
 func ExtractClaimsFromSignedSection(source string) (map[string]string, error) {
-	if len(source) > maxResourceBytes || !utf8.ValidString(source) {
+	if len(source) > maxResourceBytes {
 		return nil, fmt.Errorf("resource-limit-exceeded")
+	}
+	if !utf8.ValidString(source) {
+		return nil, fmt.Errorf("parser-profile-unsupported")
 	}
 	if err := validatePortableHTML(source); err != nil {
 		return nil, err
@@ -105,13 +110,10 @@ func ExtractClaimsFromSignedSection(source string) (map[string]string, error) {
 		return nil, fmt.Errorf("parser-profile-unsupported: %v", err)
 	}
 	children := fragment
-	for _, node := range fragment {
-		if node.Type == htmlpkg.ElementNode && strings.EqualFold(node.Data, "signed-section") {
-			children = children[:0]
-			for child := node.FirstChild; child != nil; child = child.NextSibling {
-				children = append(children, child)
-			}
-			break
+	if section := firstSignedSection(fragment); section != nil {
+		children = children[:0]
+		for child := section.FirstChild; child != nil; child = child.NextSibling {
+			children = append(children, child)
 		}
 	}
 	claims := make(map[string]string)
@@ -153,6 +155,30 @@ func ExtractClaimsFromSignedSection(source string) (map[string]string, error) {
 		claims[name] = content
 	}
 	return claims, nil
+}
+
+// firstSignedSection walks the parsed tree in document order. A signed
+// section nested inside another element is still the first candidate when it
+// appears before a later top-level section.
+func firstSignedSection(nodes []*htmlpkg.Node) *htmlpkg.Node {
+	for _, node := range nodes {
+		if section := firstSignedSectionNode(node); section != nil {
+			return section
+		}
+	}
+	return nil
+}
+
+func firstSignedSectionNode(node *htmlpkg.Node) *htmlpkg.Node {
+	if node.Type == htmlpkg.ElementNode && strings.EqualFold(node.Data, "signed-section") {
+		return node
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if section := firstSignedSectionNode(child); section != nil {
+			return section
+		}
+	}
+	return nil
 }
 
 // x/net/html repairs malformed input and does not expose parser diagnostics.
@@ -413,7 +439,7 @@ func finalizeCanonicalParts(parts []string) string {
 	for strings.Contains(text, "\n\n") {
 		text = strings.ReplaceAll(text, "\n\n", "\n")
 	}
-	return strings.Trim(text, " \n")
+	return strings.TrimSpace(text)
 }
 
 func appendAttributeRecords(parts *[]string, elementName string, attrs map[string]string, base *whatwgurl.Url) error {

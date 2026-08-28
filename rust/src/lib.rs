@@ -25,7 +25,6 @@ use url::Url;
 /// Maximum size of a source document and its canonical output.
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_ELEMENT_DEPTH: usize = 256;
-const INVALID_UTF8: &str = "invalid-utf8";
 const PARSER_UNSUPPORTED: &str = "parser-profile-unsupported";
 const RESOURCE_LIMIT: &str = "resource-limit-exceeded";
 
@@ -220,7 +219,7 @@ pub fn try_normalize_text_v1(text: &[u8], preserve_whitespace: bool) -> Result<S
     if text.len() > MAX_DOCUMENT_BYTES {
         return Err(RESOURCE_LIMIT.to_string());
     }
-    let text = std::str::from_utf8(text).map_err(|_| INVALID_UTF8.to_string())?;
+    let text = std::str::from_utf8(text).map_err(|_| PARSER_UNSUPPORTED.to_string())?;
     try_normalize_text(text, preserve_whitespace)
 }
 
@@ -332,9 +331,6 @@ pub fn try_extract_canonical_text_with_options(
         options.preserve_whitespace,
     )?;
 
-    if out.len() > MAX_DOCUMENT_BYTES {
-        return Err(RESOURCE_LIMIT.to_string());
-    }
     let result = finalize_parts(&out, options.preserve_whitespace);
     if result.len() > MAX_DOCUMENT_BYTES {
         return Err(RESOURCE_LIMIT.to_string());
@@ -354,9 +350,11 @@ pub fn try_extract_canonical_text_v1(
     if base_url.is_some_and(|base| base.len() > MAX_DOCUMENT_BYTES) {
         return Err(RESOURCE_LIMIT.to_string());
     }
-    let html = std::str::from_utf8(html).map_err(|_| INVALID_UTF8.to_string())?;
+    let html = std::str::from_utf8(html).map_err(|_| PARSER_UNSUPPORTED.to_string())?;
     let base = match base_url {
-        Some(bytes) => Some(std::str::from_utf8(bytes).map_err(|_| INVALID_UTF8.to_string())?),
+        Some(bytes) => {
+            Some(std::str::from_utf8(bytes).map_err(|_| PARSER_UNSUPPORTED.to_string())?)
+        }
         None => None,
     };
     try_extract_canonical_text_with_base_url(html, base)
@@ -795,7 +793,7 @@ fn finalize_parts(text: &str, _preserve_whitespace: bool) -> String {
     while text.contains("\n\n") {
         text = text.replace("\n\n", "\n");
     }
-    text.trim_matches(&[' ', '\n'][..]).to_string()
+    text.trim().to_string()
 }
 
 /// Compute the canonical serialization of a claim map.
@@ -892,18 +890,96 @@ pub fn canonicalize_json_document(raw: &[u8]) -> Result<String, String> {
         return Err("resource-limit-exceeded".to_string());
     }
     enforce_json_nesting_limit(raw)?;
+    let value = match parse_strict_json(raw) {
+        Ok(value) => value,
+        Err(_error) if has_lone_surrogate_escape(raw) => {
+            // serde_json rejects lone UTF-16 surrogate escapes while parsing,
+            // so validate the same bytes with surrogate escapes replaced by a
+            // scalar placeholder. This second parse only distinguishes a
+            // syntactically valid lone-surrogate document from malformed JSON;
+            // it never supplies the value used for canonicalization.
+            let sanitized = replace_surrogate_escapes(raw);
+            match parse_strict_json(&sanitized) {
+                Ok(_) => return Err("jcs-invalid-surrogate".to_string()),
+                Err(sanitized_error) => return Err(map_json_error(sanitized_error)),
+            }
+        }
+        Err(error) => return Err(map_json_error(error)),
+    };
+    // Only classify surrogate escapes after the JSON parser has accepted the
+    // complete document. A malformed document such as an unterminated string
+    // containing `\uD800` is jcs-invalid-json, not jcs-invalid-surrogate.
     if has_lone_surrogate_escape(raw) {
         return Err("jcs-invalid-surrogate".to_string());
     }
-    let mut de = serde_json::Deserializer::from_slice(raw);
-    let value = StrictJson::deserialize(&mut de).map_err(map_json_error)?;
-    de.end().map_err(map_json_error)?;
+    // RFC 8785 erratum 7920: reject negative zero, including negative values
+    // whose magnitude underflows to zero during binary64 parsing.
+    if has_negative_zero_number(raw) {
+        return Err("jcs-number".to_string());
+    }
     let output = serde_json_canonicalizer::to_string(&value)
         .map_err(|e| format!("jcs-invalid-json: {e}"))?;
     if output.len() > MAX_DOCUMENT_BYTES {
         return Err("resource-limit-exceeded".to_string());
     }
     Ok(output)
+}
+
+/// Detect negative JSON number tokens that parse as IEEE-754 negative zero.
+/// This lexical pass is needed because serde_json presents an integer token
+/// such as `-0` to the visitor as the signed integer zero, losing its sign.
+fn has_negative_zero_number(raw: &[u8]) -> bool {
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < raw.len() {
+        let byte = raw[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'-' {
+            let start = index;
+            index += 1;
+            while index < raw.len()
+                && !matches!(
+                    raw[index],
+                    b' ' | b'\t' | b'\r' | b'\n' | b',' | b']' | b'}'
+                )
+            {
+                index += 1;
+            }
+            if let Ok(token) = std::str::from_utf8(&raw[start..index]) {
+                if let Ok(number) = token.parse::<f64>() {
+                    if number == 0.0 && number.is_sign_negative() {
+                        return true;
+                    }
+                }
+            }
+            continue;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn parse_strict_json(raw: &[u8]) -> Result<StrictJson, serde_json::Error> {
+    let mut de = serde_json::Deserializer::from_slice(raw);
+    let value = StrictJson::deserialize(&mut de)?;
+    de.end()?;
+    Ok(value)
 }
 
 fn enforce_json_nesting_limit(raw: &[u8]) -> Result<(), String> {
@@ -939,15 +1015,44 @@ fn enforce_json_nesting_limit(raw: &[u8]) -> Result<(), String> {
 
 fn map_json_error(error: serde_json::Error) -> String {
     let msg = error.to_string();
-    if msg.contains("surrogate") {
-        "jcs-invalid-surrogate".to_string()
-    } else if msg.contains("number out of range") || msg.contains("invalid number") {
+    if msg.contains("number out of range") || msg.contains("invalid number") {
         "jcs-number".to_string()
     } else if msg.contains("duplicate object key") {
         "jcs-duplicate-key".to_string()
     } else {
         format!("jcs-invalid-json: {msg}")
     }
+}
+
+fn replace_surrogate_escapes(raw: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let slash_run = if raw[i] == b'\\' {
+            let mut count = 0;
+            let mut p = i;
+            while p > 0 && raw[p - 1] == b'\\' {
+                count += 1;
+                p -= 1;
+            }
+            count
+        } else {
+            0
+        };
+        if raw[i] == b'\\'
+            && slash_run % 2 == 0
+            && i + 5 < raw.len()
+            && raw[i + 1] == b'u'
+            && hex4(&raw[i + 2..i + 6]).is_some_and(|v| (0xD800..=0xDFFF).contains(&v))
+        {
+            output.extend_from_slice(br"\uFFFD");
+            i += 6;
+        } else {
+            output.push(raw[i]);
+            i += 1;
+        }
+    }
+    output
 }
 
 fn hex4(bytes: &[u8]) -> Option<u16> {

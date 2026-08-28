@@ -169,6 +169,9 @@ func (p *strictJSONParser) string() (string, error) {
 			p.pos += 4
 			if u >= 0xd800 && u <= 0xdbff {
 				if p.pos+6 > len(p.data) || p.data[p.pos] != '\\' || p.data[p.pos+1] != 'u' {
+					if !hasUnescapedQuote(p.data, p.pos) {
+						return "", p.fail()
+					}
 					return "", fmt.Errorf("jcs-invalid-surrogate")
 				}
 				p.pos += 2
@@ -186,6 +189,9 @@ func (p *strictJSONParser) string() (string, error) {
 				}
 				b.WriteRune(utf16.DecodeRune(rune(u), rune(lo)))
 			} else if u >= 0xdc00 && u <= 0xdfff {
+				if !hasUnescapedQuote(p.data, p.pos) {
+					return "", p.fail()
+				}
 				return "", fmt.Errorf("jcs-invalid-surrogate")
 			} else {
 				b.WriteRune(rune(u))
@@ -196,6 +202,25 @@ func (p *strictJSONParser) string() (string, error) {
 	}
 	return "", p.fail()
 }
+
+func hasUnescapedQuote(data []byte, start int) bool {
+	escaped := false
+	for _, c := range data[start:] {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *strictJSONParser) number() (float64, error) {
 	start := p.pos
 	if p.pos < len(p.data) && p.data[p.pos] == '-' {
@@ -236,6 +261,11 @@ func (p *strictJSONParser) number() (float64, error) {
 	}
 	n, e := strconv.ParseFloat(string(p.data[start:p.pos]), 64)
 	if e != nil || n != n || n > 1.7976931348623157e308 || n < -1.7976931348623157e308 {
+		return 0, fmt.Errorf("jcs-number")
+	}
+	// RFC 8785 erratum 7920: reject negative zero, including negative values
+	// whose magnitude underflows to zero during binary64 parsing.
+	if p.data[start] == '-' && n == 0 {
 		return 0, fmt.Errorf("jcs-number")
 	}
 	return n, nil

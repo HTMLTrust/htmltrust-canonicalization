@@ -69,6 +69,16 @@ def test_preserve_whitespace():
     assert normalize_text(src, preserve_whitespace=True) == src
 
 
+def test_rejects_invalid_utf8_surrogate():
+    with pytest.raises(ValueError, match="parser-profile-unsupported"):
+        normalize_text("\ud800")
+
+
+def test_source_limit_precedes_invalid_utf8_classification():
+    with pytest.raises(ValueError, match="resource-limit-exceeded"):
+        normalize_text("\ud800" * (1024 * 1024 + 1))
+
+
 def test_normalize_text_rejects_non_string():
     with pytest.raises(TypeError):
         normalize_text(123)  # type: ignore[arg-type]

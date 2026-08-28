@@ -11,8 +11,8 @@ class CanonicalizeJcsTest extends TestCase
     public function testCanonicalizesRawDocument(): void
     {
         $this->assertSame(
-            '{"a":1e+30,"b":4.5,"z":0,"😀":2,"":1}',
-            Canonicalize::canonicalizeJsonDocument('{"z":-0,"a":1e30,"b":4.50,"😀":2,"":1}')
+            '{"a":1e+30,"b":4.5,"😀":2,"":1}',
+            Canonicalize::canonicalizeJsonDocument('{"a":1e30,"b":4.50,"😀":2,"":1}')
         );
     }
 
@@ -22,8 +22,8 @@ class CanonicalizeJcsTest extends TestCase
         ini_set('serialize_precision', '3');
         try {
             $this->assertSame(
-                '[0,0,5e-324,1e+23,0.000001,333333333.33333325]',
-                Canonicalize::canonicalizeJsonDocument('[0,-0,5e-324,1e23,1e-6,333333333.33333325]')
+                '[0,5e-324,1e+23,0.000001,333333333.33333325]',
+                Canonicalize::canonicalizeJsonDocument('[0,5e-324,1e23,1e-6,333333333.33333325]')
             );
         } finally {
             if ($previous !== false) ini_set('serialize_precision', $previous);
@@ -54,6 +54,9 @@ class CanonicalizeJcsTest extends TestCase
             ['{"a":1,"a":2}', 'jcs-duplicate-key'],
             ['"\\uD800"', 'jcs-invalid-surrogate'],
             ['{"n":1e400}', 'jcs-number'],
+            ['{"n":-0}', 'jcs-number'],
+            ['{"n":-1e-400}', 'jcs-number'],
+            ['{"value":"\\uD800', 'jcs-invalid-json'],
         ];
     }
 }
