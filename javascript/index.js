@@ -125,17 +125,6 @@ export function normalizeText(text, options = {}) {
 }
 
 // === HTML → canonical text extraction ===
-//
-// Elements whose text content is NEVER part of the signed content.
-// These are either metadata (meta, link, script, style) or the signed-section
-// wrapper's OWN metadata (meta tags inside a signed-section carry claims,
-// not content). We strip them entirely before extracting text.
-const EXCLUDED_ELEMENTS_RE =
-  /<(script|style|meta|link|head|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>|<(meta|link|br|hr|img|input|source|track|wbr)\b[^>]*\/?>(?!\s*<\/\2>)/gi;
-
-// Self-closing and void elements (no text content) to strip.
-const VOID_ELEMENTS_RE = /<(meta|link|br|hr|img|input|source|track|wbr|area|base|col|embed|param)\b[^>]*\/?>/gi;
-
 // Boundary-producing elements from the protocol draft. A boundary-producing
 // element emits a line feed after its descendants have contributed text.
 // Inline elements (em, strong, a, span, etc.) do NOT get separators, so
@@ -143,10 +132,6 @@ const VOID_ELEMENTS_RE = /<(meta|link|br|hr|img|input|source|track|wbr|area|base
 const BLOCK_ELEMENTS =
   "address|article|aside|blockquote|details|dialog|div|dl|fieldset|figcaption|figure|footer|form|h[1-6]|header|hgroup|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul";
 
-// Any remaining HTML tag (inline elements we strip without adding whitespace).
-const ANY_TAG_RE = /<\/?[a-z][a-z0-9-]*\b[^>]*>/gi;
-const HTML_TOKEN_RE = /<!--[\s\S]*?-->|<![^>]*>|<\/?[a-z][^\t\n\f\r \/>]*(?:[\t\n\f\r ]+(?:[^>"']+|"[^"]*"|'[^']*')*)?\s*\/?>/gi;
-const TAG_NAME_RE = /^<\/?\s*([a-z][^\t\n\f\r \/>]*)/i;
 const SIGNED_ATTRS = ["href", "src", "alt", "aria-label"];
 const VOID_TAGS = new Set([
   "area",
@@ -318,21 +303,128 @@ function parseHTMLFragment(html) {
   return fragment;
 }
 
+function* iterPortableTokens(source, state) {
+  // Keep this source scan linear. The previous token regex nested a repeated
+  // alternation containing quoted `*` branches. An incomplete quoted
+  // attribute could make the regexp retry many partitions of the same span.
+  // This scanner advances its cursor monotonically and treats the first
+  // unquoted `>` as the end of a candidate tag.
+  let cursor = 0;
+  while (cursor < source.length) {
+    const start = source.indexOf("<", cursor);
+    if (start < 0) return;
+
+    // Raw-text bodies are data. Only their matching end tag can change the
+    // source-depth stack; skipping every other `<` also keeps malformed
+    // tag-like strings in script/style/iframe content linear.
+    if (state?.rawName) {
+      const isMatchingClose = source[start + 1] === "/" && portableTagName(source, start) === state.rawName;
+      if (!isMatchingClose) {
+        cursor = start + 1;
+        continue;
+      }
+    }
+
+    if (source.startsWith("<!--", start)) {
+      const commentEnd = source.indexOf("-->", start + 4);
+      if (commentEnd < 0) {
+        if (state?.rawName) {
+          cursor = start + 1;
+          continue;
+        }
+        return;
+      }
+      const tokenEnd = commentEnd + 3;
+      yield [start, tokenEnd];
+      cursor = tokenEnd;
+      continue;
+    }
+
+    if (source.startsWith("<!", start)) {
+      const declarationEnd = source.indexOf(">", start + 2);
+      if (declarationEnd < 0) {
+        if (state?.rawName) {
+          cursor = start + 1;
+          continue;
+        }
+        return;
+      }
+      const tokenEnd = declarationEnd + 1;
+      yield [start, tokenEnd];
+      cursor = tokenEnd;
+      continue;
+    }
+
+    if (!looksLikePortableTag(source, start)) {
+      cursor = start + 1;
+      continue;
+    }
+    const tokenEnd = scanPortableTagEnd(source, start);
+    if (tokenEnd == null) {
+      if (state?.rawName) {
+        cursor = start + 1;
+        continue;
+      }
+      return;
+    }
+    yield [start, tokenEnd];
+    cursor = tokenEnd;
+  }
+}
+
+function looksLikePortableTag(source, start) {
+  let index = start + 1;
+  if (source[index] === "/") index++;
+  const code = source.charCodeAt(index);
+  return code >= 0x41 && code <= 0x5a || code >= 0x61 && code <= 0x7a;
+}
+
+function scanPortableTagEnd(source, start) {
+  let quote = null;
+  for (let index = start + 1; index < source.length; index++) {
+    const char = source[index];
+    if (quote !== null) {
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ">") {
+      return index + 1;
+    }
+  }
+  return null;
+}
+
+function portableTagName(source, start) {
+  let index = start + 1;
+  if (source[index] === "/") index++;
+  const first = source.charCodeAt(index);
+  if (!(first >= 0x41 && first <= 0x5a || first >= 0x61 && first <= 0x7a)) return null;
+  const nameStart = index;
+  index++;
+  while (index < source.length) {
+    const code = source.charCodeAt(index);
+    if (code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d || code === 0x20 || code === 0x2f || code === 0x3e) break;
+    index++;
+  }
+  return source.slice(nameStart, index).toLowerCase();
+}
+
 function validatePortableSource(source) {
   // parse5 recovers misnesting and foster parenting without emitting a parse
   // diagnostic, so these source-level checks complement its tokenizer.
   const stack = [];
+  const scanState = { rawName: null };
   let index = 0;
-  for (const match of source.matchAll(HTML_TOKEN_RE)) {
-    const text = source.slice(index, match.index);
+  for (const [tokenStart, tokenEnd] of iterPortableTokens(source, scanState)) {
+    const text = source.slice(index, tokenStart);
     // script, style, and iframe are raw-text/escapable-raw-text elements.
     // Their bodies are excluded from canonical content, so references there
     // must not affect the portable-profile validation of the surrounding
     // document.
     if (!isRawTextElement(stack.at(-1))) validatePortableReferences(text);
     if (stack.at(-1) === "table" && text.trim()) throw new Error("parser-profile-unsupported");
-    index = match.index + match[0].length;
-    const token = match[0];
+    index = tokenEnd;
+    const token = source.slice(tokenStart, tokenEnd);
     if (token.startsWith("<!--")) {
       // HTML comments cannot contain a double hyphen, including one hidden
       // in the comment body before the closing delimiter.
@@ -342,21 +434,22 @@ function validatePortableSource(source) {
       }
       continue;
     }
-    const nameMatch = TAG_NAME_RE.exec(token);
-    if (!nameMatch) continue;
-    const name = nameMatch[1].toLowerCase();
+    const name = portableTagName(source, tokenStart);
+    if (!name) continue;
     if (isRawTextElement(stack.at(-1)) && !(token.startsWith("</") && name === stack.at(-1))) continue;
     validatePortableReferences(token);
     if (name === "svg" || name === "math" || name === "foreignobject") throw new Error("parser-profile-unsupported");
     if (/^<\//.test(token)) {
       if (stack.at(-1) !== name) throw new Error("parser-profile-unsupported");
       stack.pop();
+      scanState.rawName = isRawTextElement(stack.at(-1)) ? stack.at(-1) : null;
       continue;
     }
     const attrs = parseAttributesWithDuplicateCheck(token);
     if (!VOID_TAGS.has(name) && !/\/\s*>$/.test(token)) {
       stack.push(name);
       if (stack.length > MAX_ELEMENT_DEPTH) throw new Error("resource-limit-exceeded");
+      scanState.rawName = isRawTextElement(name) ? name : null;
     }
     void attrs;
   }

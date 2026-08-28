@@ -141,6 +141,32 @@ class CanonicalizeTest extends TestCase
         ));
     }
 
+    public function testRejectsPathologicalQuotedTagWithinBoundedTime(): void
+    {
+        $html = '<p>before</p><img ' . str_repeat('data-x="x" ', 8) . "style='x<p>after</p>";
+        $started = microtime(true);
+        try {
+            Canonicalize::extractCanonicalText($html);
+            $this->fail('Expected parser-profile-unsupported');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertSame('parser-profile-unsupported', $e->getMessage());
+        }
+        $this->assertLessThan(1.0, microtime(true) - $started);
+    }
+
+    public function testRejectsPathologicalExcludedBodyWithinBoundedTime(): void
+    {
+        $html = '<p>before</p><script ' . str_repeat('data-x="x" ', 8) . "style='x<p>after</p>";
+        $started = microtime(true);
+        try {
+            Canonicalize::extractCanonicalText($html);
+            $this->fail('Expected parser-profile-unsupported');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertSame('parser-profile-unsupported', $e->getMessage());
+        }
+        $this->assertLessThan(1.0, microtime(true) - $started);
+    }
+
     public function testRejectsElementNestingBeyondLimit(): void
     {
         $this->expectException(\InvalidArgumentException::class);

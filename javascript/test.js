@@ -194,6 +194,17 @@ await check('extractCanonicalText rejects malformed comment bodies', () => {
   assert(threw, 'double hyphen in a comment must be rejected');
 });
 
+await check('extractCanonicalText bounds malformed quoted tag scanning', () => {
+  const source = '<p>before</p><img ' + ('data-x="x" '.repeat(8)) + "style='x<p>after</p>";
+  const started = performance.now();
+  let threw = false;
+  try { extractCanonicalText(source); } catch (error) {
+    threw = String(error).includes('parser-profile-unsupported');
+  }
+  assert(threw, 'unterminated quoted attributes must be rejected');
+  assert(performance.now() - started < 1000, 'malformed quoted tag scanning must stay bounded');
+});
+
 await check('extractCanonicalText accepts qualified tag names and enforces element depth', () => {
   assertEq(extractCanonicalText('<x:y>qualified</x:y>'), 'qualified');
   const withinLimit = '<x:y>'.repeat(256) + 'deep' + '</x:y>'.repeat(256);
