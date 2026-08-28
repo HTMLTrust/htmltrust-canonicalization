@@ -10,8 +10,6 @@ contribute, where whitespace separators go) is identical.
 
 from __future__ import annotations
 
-import re
-
 from bs4 import BeautifulSoup, NavigableString, Tag
 from html5lib.html5parser import HTMLParser
 from pywhatwgurl import URL
@@ -43,11 +41,6 @@ _SIGNED_ATTRS = ("href", "src", "alt", "aria-label")
 _MAX_SOURCE_BYTES = 1024 * 1024
 _MAX_OUTPUT_BYTES = 1024 * 1024
 _MAX_ELEMENT_DEPTH = 256
-_HTML_TOKEN_RE = re.compile(
-    r"<!--.*?-->|<![^>]*>|</?\s*[a-z][^\t\n\f\r />]*(?:[^>\"']+|\"[^\"]*\"|'[^']*')*>",
-    re.I | re.S,
-)
-_TAG_NAME_RE = re.compile(r"^</?\s*([a-z][^\t\n\f\r />]*)", re.I)
 _VOID_TAGS = frozenset({
     "area", "base", "br", "col", "embed", "hr", "img", "input",
     "link", "meta", "param", "source", "track", "wbr",
@@ -142,25 +135,23 @@ def _check_source_depth(source: str) -> None:
     """
     stack: list[str] = []
     cursor = 0
-    for match in _HTML_TOKEN_RE.finditer(source):
-        text = source[cursor:match.start()]
+    for token_start, token_end in _iter_profile_tokens(source):
+        text = source[cursor:token_start]
         if stack and stack[-1] == "table" and text.strip():
             raise ValueError("parser-profile-unsupported")
-        cursor = match.end()
+        cursor = token_end
 
-        token = match.group(0)
-        name_match = _TAG_NAME_RE.match(token)
-        if not name_match:
+        name = _profile_tag_name(source, token_start)
+        if name is None:
             continue
-        name = name_match.group(1).lower()
-        if token.lstrip().startswith("</"):
+        if source[token_start + 1:token_start + 2] == "/":
             if not stack or stack[-1] != name:
                 raise ValueError("parser-profile-unsupported")
             stack.pop()
             continue
         if name in {"svg", "math", "foreignobject"}:
             raise ValueError("parser-profile-unsupported")
-        if name not in _VOID_TAGS and not re.search(r"/\s*>$", token):
+        if name not in _VOID_TAGS and not _is_self_closing(source, token_start, token_end):
             stack.append(name)
             if len(stack) > _MAX_ELEMENT_DEPTH:
                 raise ValueError("resource-limit-exceeded")
@@ -169,6 +160,102 @@ def _check_source_depth(source: str) -> None:
         raise ValueError("parser-profile-unsupported")
     if stack:
         raise ValueError("parser-profile-unsupported")
+
+
+def _iter_profile_tokens(source: str):
+    """Yield complete HTML profile tokens in one bounded forward scan.
+
+    The old token regex nested a repeated alternation containing ``+`` and
+    quoted ``*`` branches.  A malformed attribute could make it retry many
+    partitions of the same source span. This scanner handles comments,
+    declarations, and quoted tag attributes directly. If a candidate token
+    is incomplete, iteration stops and the HTML5 diagnostics below report the
+    malformed source.
+    """
+    cursor = 0
+    source_length = len(source)
+    while cursor < source_length:
+        start = source.find("<", cursor)
+        if start < 0:
+            return
+
+        if source.startswith("<!--", start):
+            comment_end = source.find("-->", start + 4)
+            if comment_end < 0:
+                return
+            token_end = comment_end + 3
+            yield start, token_end
+            cursor = token_end
+            continue
+
+        if source.startswith("<!", start):
+            declaration_end = source.find(">", start + 2)
+            if declaration_end < 0:
+                return
+            token_end = declaration_end + 1
+            yield start, token_end
+            cursor = token_end
+            continue
+
+        if not _looks_like_profile_tag(source, start):
+            cursor = start + 1
+            continue
+        token_end = _scan_profile_tag_end(source, start)
+        if token_end is None:
+            return
+        yield start, token_end
+        cursor = token_end
+
+
+def _looks_like_profile_tag(source: str, start: int) -> bool:
+    r"""Match the initial ``</?\s*[a-z]`` token shape without a regex."""
+    index = start + 1
+    if index < len(source) and source[index] == "/":
+        index += 1
+    while index < len(source) and source[index].isspace():
+        index += 1
+    return index < len(source) and "a" <= source[index].lower() <= "z"
+
+
+def _scan_profile_tag_end(source: str, start: int) -> int | None:
+    """Return the first unquoted ``>`` in a profile tag."""
+    quote: str | None = None
+    index = start + 1
+    while index < len(source):
+        char = source[index]
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == ">":
+            return index + 1
+        index += 1
+    return None
+
+
+def _profile_tag_name(source: str, start: int) -> str | None:
+    """Extract a token name using the former tag-name character class."""
+    index = start + 1
+    if index < len(source) and source[index] == "/":
+        index += 1
+    while index < len(source) and source[index].isspace():
+        index += 1
+    if index >= len(source) or not ("a" <= source[index].lower() <= "z"):
+        return None
+    name_start = index
+    index += 1
+    while index < len(source) and source[index] not in "\t\n\f\r />":
+        index += 1
+    return source[name_start:index].lower()
+
+
+def _is_self_closing(source: str, start: int, end: int) -> bool:
+    r"""Check the former ``/\s*>`` self-closing suffix without a regex."""
+    index = end - 2
+    while index >= start and source[index].isspace():
+        index -= 1
+    return index >= start and source[index] == "/"
 
 
 def _strip_excluded_element_contents(source: str) -> str:
