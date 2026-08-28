@@ -19,6 +19,10 @@ import {
   canonicalizeJson,
   canonicalizeJsonDocument,
 } from './index.js';
+import {
+  preflightPortableDocument,
+  wrapSignedSection,
+} from './portable-authoring.js';
 import * as nodeCrypto from 'node:crypto';
 import { generateKeyPairSync, sign as nodeSign, createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -808,6 +812,87 @@ await check('end-to-end test vector reproduces hashes, payload, and signature', 
     await verifySignature(payload, v.signature, v.key.publicKeyPem, v.algorithm),
     'vector signature must verify',
   );
+});
+
+await check('portable authoring preflight discovers regions and follows first-base semantics', () => {
+  const result = preflightPortableDocument(`
+    <!doctype html><html><head>
+      <base href="/assets/">
+      <base href="https://ignored.example/">
+    </head><body>
+      <signed-section><meta name="author" content="Ada"><p><a href="story">Hello</a></p></signed-section>
+      <signed-section><p>Second</p></signed-section>
+    </body></html>
+  `, { documentURL: 'https://example.org/articles/page.html' });
+  assert(result.ok, 'valid regions should pass');
+  assertEq(result.baseURL, 'https://example.org/assets/');
+  assertEq(result.regions.length, 2);
+  assertEq(result.regions[0].canonicalText, '@attr:a:href:https://example.org/assets/story\nHello');
+  assertEq(result.regions[0].canonicalClaims, 'author:Ada\n');
+  assertEq(result.regions[1].canonicalText, 'Second');
+  assertEq(result.diagnostics.length, 0);
+});
+
+await check('portable authoring does not skip an unsafe first base', () => {
+  const result = preflightPortableDocument(`
+    <base href="http://unsafe.example/">
+    <base href="https://ignored.example/">
+    <signed-section><a href="story">Hello</a></signed-section>
+  `, { documentURL: 'https://example.org/articles/page.html' });
+  assert(!result.ok, 'relative signed URL under an HTTP document base must fail');
+  assertEq(result.baseURL, 'http://unsafe.example/');
+  assertEq(result.diagnostics[0].code, 'base-invalid');
+  assertEq(result.diagnostics[0].severity, 'warning');
+  assertEq(result.regions[0].diagnostics[0].code, 'url-policy-violation');
+});
+
+await check('portable authoring keeps direct claims with their own nested section', () => {
+  const result = preflightPortableDocument(
+    '<signed-section><meta name="author" content="outer"><signed-section><meta name="author" content="inner"><p>inner</p></signed-section><meta name="license" content="CC-BY"></signed-section>',
+    { documentURL: 'https://example.org/page.html' },
+  );
+  assert(result.ok, 'nested sections should be independently preflightable');
+  assertEq(result.regions.length, 2);
+  assertEq(result.regions[0].canonicalClaims, 'author:outer\nlicense:CC-BY\n');
+  assertEq(result.regions[1].canonicalClaims, 'author:inner\n');
+});
+
+await check('portable authoring enforces the complete-document byte ceiling', () => {
+  const opening = '<html><body>';
+  const section = '<signed-section><p>x</p></signed-section>';
+  const closing = '</body></html>';
+  const exact = opening + section + 'x'.repeat(1024 * 1024 - new TextEncoder().encode(opening + section + closing).byteLength) + closing;
+  assertEq(new TextEncoder().encode(exact).byteLength, 1024 * 1024);
+  assert(preflightPortableDocument(exact, { documentURL: 'https://example.org/page.html' }).ok, 'exact-limit document should pass');
+  const over = opening + section + 'x'.repeat(1024 * 1024 - new TextEncoder().encode(opening + section + closing).byteLength + 1) + closing;
+  const rejected = preflightPortableDocument(over, { documentURL: 'https://example.org/page.html' });
+  assert(!rejected.ok, 'over-limit document must fail');
+  assertEq(rejected.diagnostics[0].code, 'resource-limit-exceeded');
+});
+
+await check('portable authoring keeps region failures isolated and actionable', () => {
+  const result = preflightPortableDocument(
+    '<main><signed-section><p><a href="http://unsafe.example/">bad base</a></p></signed-section><signed-section><p>good</p></signed-section></main>',
+    { documentURL: 'https://example.org/page.html' },
+  );
+  assert(!result.ok, 'a failing region must fail the document');
+  assertEq(result.regions[0].status, 'fail');
+  assertEq(result.regions[0].diagnostics[0].code, 'url-policy-violation');
+  assert(result.regions[0].diagnostics[0].context.location, 'source location context is required');
+  assertEq(result.regions[1].status, 'pass');
+});
+
+await check('portable authoring wraps only equivalent fragments', () => {
+  const fragment = '<meta name="author" content="Ada"><p>Hello &amp; goodbye</p>';
+  assertEq(wrapSignedSection(fragment), `<signed-section>${fragment}</signed-section>`);
+  assertEq(wrapSignedSection('<p><!-- the string <html> is content --></p>'), '<signed-section><p><!-- the string <html> is content --></p></signed-section>');
+  for (const ambiguous of ['<html><body>text</body></html>', '<signed-section><p>text</p></signed-section>']) {
+    let threw = false;
+    try { wrapSignedSection(ambiguous); } catch (error) {
+      threw = error.code === 'conversion-ambiguous';
+    }
+    assert(threw, 'ambiguous wrapping input must be rejected');
+  }
 });
 
 await new Promise((r) => fixtureServer.close(r));
