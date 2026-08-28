@@ -1,0 +1,6 @@
+{
+  "name": "nested-duplicate-key",
+  "description": "Duplicate detection applies recursively inside arrays and objects.",
+  "input": "{\"items\":[{\"x\":1,\"x\":2}]}",
+  "error": "jcs-duplicate-key"
+}

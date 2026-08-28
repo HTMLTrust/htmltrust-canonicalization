@@ -55,7 +55,7 @@ final class TrustDirectoryResolver implements KeyResolver
 
         foreach ($this->baseUrls as $base) {
             $url = rtrim($base, '/') . '/keys/' . rawurlencode($keyid);
-            $response = ($this->fetcher)($url);
+            $response = HttpFetcher::validateResponse(($this->fetcher)($url));
             if ($response === null) {
                 continue;
             }
@@ -70,8 +70,14 @@ final class TrustDirectoryResolver implements KeyResolver
             $algorithm = isset($decoded['algorithm']) && is_string($decoded['algorithm']) && $decoded['algorithm'] !== ''
                 ? strtolower($decoded['algorithm'])
                 : 'ed25519';
+            $revoked = isset($decoded['revoked']) && is_bool($decoded['revoked'])
+                ? $decoded['revoked']
+                : false;
+            $expires = isset($decoded['expires']) && is_string($decoded['expires']) && $decoded['expires'] !== ''
+                ? $decoded['expires']
+                : null;
 
-            return new ResolvedKey($pem, $algorithm, $keyid);
+            return new ResolvedKey($pem, $algorithm, $keyid, $revoked, $expires);
         }
 
         return null;

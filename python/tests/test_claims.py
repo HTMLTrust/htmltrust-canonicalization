@@ -45,13 +45,9 @@ def test_normalizes_names():
     assert out == "odd...name:x\n"
 
 
-def test_coerces_value_to_string():
-    out = canonicalize_claims({"count": 42, "enabled": True})
-    # Booleans serialize as "True" / "False" via str(); that's fine for
-    # this layer -- callers should pre-stringify if they need different
-    # representations.
-    assert "count:42" in out
-    assert "enabled:True" in out
+def test_rejects_non_string_value():
+    with pytest.raises(ValueError, match="claim-malformed"):
+        canonicalize_claims({"count": 42})  # type: ignore[dict-item]
 
 
 def test_rejects_non_mapping():

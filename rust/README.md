@@ -1,64 +1,106 @@
-# HTMLTrust Canonicalization -- Rust
+# HTMLTrust Canonicalization for Rust
 
-Rust crate for the HTMLTrust canonical text normalization library. Produces byte-identical output to the JavaScript, Go, PHP, and Python implementations for every test vector in the shared conformance suite.
+This crate implements the Rust binding for `htmltrust-c14n-v1`. It normalizes
+text, extracts signed content from HTML, canonicalizes claims, and
+canonicalizes raw JSON under RFC 8785. The shared fixtures require the same
+bytes from the JavaScript, Go, PHP, Python, and Rust bindings.
 
-## Status
+Version: `0.3.0` release candidate
+Rust: 1.86 or newer
 
-Implemented. The 18-case normalization conformance suite from the JavaScript reference (`javascript/test.js`) passes, along with parity tests for `extract_canonical_text` and `canonicalize_claims`.
+## Test a fresh checkout
 
-Out of scope for this crate: signature verification and key resolution. Those will arrive in a follow-up PR alongside the Python binding once the JavaScript surface area lands on `main`.
+From the repository root, Docker runs the Rust unit tests, native FFI tests,
+and every shared conformance fixture:
 
-## Scope
+```sh
+docker compose -f compose.test.yml run --rm rust
+```
 
-This crate provides three functions:
+Run `./scripts/test-in-docker.sh` to test all five language bindings.
 
-1. **`normalize_text(text: &str, preserve_whitespace: bool) -> String`** -- applies the 8-phase canonicalization defined in [`../spec.md`](../spec.md) to a UTF-8 string.
-2. **`extract_canonical_text(html: &str) -> String`** -- parses an HTML fragment with `scraper` (html5ever), walks the DOM, emits text nodes and signed semantic attributes in document order, and applies `normalize_text` to text/attribute values. Use `extract_canonical_text_with_base_url` when relative `href` or `src` values need resolution.
-3. **`canonicalize_claims(claims: &BTreeMap<String, String>) -> String`** -- serializes a claim map to the canonical, hashable string used by the `claims-hash` field of the signature binding.
+With Rust installed locally:
 
-All three are pure functions: no I/O, deterministic output for the same input.
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml
+cargo test --locked --manifest-path ffi/Cargo.toml
+```
 
-## Dependencies
+## Install
 
-- `unicode-normalization` for NFKC
-- `scraper` (html5ever-backed) for HTML parsing in `extract_canonical_text`
-- `ego-tree` for the DOM walk types re-exported by scraper
-- `url` for Web URL parsing of signed semantic `href` and `src` attributes
-
-## Conformance
-
-`tests/conformance.rs` runs all 18 normalization vectors from `javascript/test.js`, plus `extract_canonical_text` and `canonicalize_claims` parity cases. Output MUST stay byte-identical to the JavaScript / Go / PHP / Python bindings.
-
-## Installation
+Use the repository while `0.3.0` is under review:
 
 ```toml
 [dependencies]
-htmltrust-canonicalization = "0.1"
+htmltrust-canonicalization = { git = "https://github.com/HTMLTrust/htmltrust-canonicalization", rev = "<commit>" }
 ```
 
-## Usage
+After the crate is published, use the release series:
+
+```toml
+[dependencies]
+htmltrust-canonicalization = "0.3"
+```
+
+## Profile-v1 API
+
+- `try_normalize_text` normalizes a UTF-8 `str` and enforces the 1 MiB source
+  and output limits.
+- `try_normalize_text_v1` accepts bytes and also rejects invalid UTF-8.
+- `try_extract_canonical_text_with_options` parses HTML with explicit
+  compatibility whitespace and base URL options. Profile-v1 callers use
+  `preserve_whitespace: false`; the portable profile rejects nesting deeper
+  than 256 elements.
+- `canonicalize_claims_checked` validates, sorts, escapes, and serializes
+  claim metadata.
+- `canonicalize_json_document` validates and canonicalizes one raw JSON
+  document, including duplicate-key checks.
+
+The infallible normalization, extraction, and claims functions remain for
+`0.2` callers that enforce their own limits. New signing code should use the
+fallible functions above.
+
+## Example
 
 ```rust
 use std::collections::BTreeMap;
 use htmltrust_canonicalization::{
-    normalize_text, extract_canonical_text, canonicalize_claims,
+    canonicalize_claims_checked,
+    try_extract_canonical_text_with_options,
+    try_normalize_text,
+    ExtractOptions,
 };
 
-let canonical = normalize_text("He said, \"Hello\u{2026}\"", false);
-// -> "He said, \"Hello...\""
+let canonical = try_normalize_text("He said, \"Hello\u{2026}\"", false)?;
+assert_eq!(canonical, "He said, \"Hello...\"");
 
-let from_html = extract_canonical_text("<p>Hello <em>world</em>!</p>");
-// -> "Hello world!"
+let content = try_extract_canonical_text_with_options(
+    "<p>Read <a href=\"/paper\">the paper</a>.</p>",
+    ExtractOptions {
+        preserve_whitespace: false,
+        base_url: Some("https://example.org/article"),
+    },
+)?;
 
-let mut claims = BTreeMap::new();
-claims.insert("License".to_string(), "CC-BY-4.0".to_string());
-claims.insert("AIAssistance".to_string(), "None".to_string());
-let claims_str = canonicalize_claims(&claims);
-// -> "AIAssistance:None\nLicense:CC-BY-4.0\n"
+let claims = BTreeMap::from([
+    ("License".to_string(), "CC-BY-4.0".to_string()),
+]);
+let claim_bytes = canonicalize_claims_checked(&claims)?;
+assert_eq!(claim_bytes, "License:CC-BY-4.0\n");
+# Ok::<(), String>(())
 ```
 
-## Tests
+Relative `href` and `src` attributes require an HTTPS base URL. The safe URL
+profile rejects credentials, control characters, and unsupported schemes.
 
-```bash
-cargo test
-```
+## Native FFI
+
+The `ffi/` crate exposes length-based `*_v1` functions for normalization and
+extraction. Status `0` means success, status `1` returns an allocated UTF-8
+error code, and status `2` reports an invalid pointer. Every valid output
+pointer is cleared before input decoding. Release returned byte buffers with
+`htmltrust_bytes_free`.
+
+The normative protocol text is maintained in the
+[HTMLTrust specification](https://github.com/HTMLTrust/htmltrust-spec/tree/main/ietf-draft).
+The repository's shared fixtures are the executable cross-language contract.

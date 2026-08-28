@@ -1,0 +1,7 @@
+{
+  "name": "resource-output-limit",
+  "description": "Canonical output larger than 1 MiB is rejected during emission.",
+  "input": "@",
+  "repeat": 524289,
+  "error": "resource-limit-exceeded"
+}

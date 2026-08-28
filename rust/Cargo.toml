@@ -1,8 +1,8 @@
 [package]
 name = "htmltrust-canonicalization"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.86"
 description = "Canonical text normalization and HTML extraction for HTMLTrust signed content. Byte-identical output to the JavaScript, Go, PHP, and Python bindings."
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/HTMLTrust/htmltrust-canonicalization"
@@ -19,6 +19,9 @@ unicode-normalization = "0.1"
 scraper = "0.20"
 ego-tree = "0.6"
 url = "2"
+serde = "1"
+serde_json = "1"
+serde_json_canonicalizer = "0.3"
 
 [dev-dependencies]
 # pure stdlib tests; nothing extra required.

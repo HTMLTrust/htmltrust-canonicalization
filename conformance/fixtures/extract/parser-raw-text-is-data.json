@@ -1,0 +1,6 @@
+{
+  "name": "parser-raw-text-is-data",
+  "description": "Tag-like strings and ambiguous references inside excluded raw-text elements do not affect portable-profile validation.",
+  "input": "<p>before</p><script>const x = \"<div data-x='>'>&amp!</div>\";</script><style><!foo><!-- .x::after{content:'<svg>&bad'}</style><iframe>const x = \"<svg>&notit;</svg>\";</iframe><p>after</p>",
+  "expected": "before\nafter"
+}

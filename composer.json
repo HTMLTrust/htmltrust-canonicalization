@@ -14,11 +14,16 @@
     }
   },
   "require": {
-    "php": ">=7.2",
+    "php": ">=8.5",
+    "ext-dom": "*",
     "ext-intl": "*",
-    "ext-mbstring": "*"
+    "ext-mbstring": "*",
+    "ext-json": "*",
+    "ext-openssl": "*",
+    "ext-sodium": "*",
+    "root23/php-json-canonicalization": "1.0.1"
   },
   "require-dev": {
-    "phpunit/phpunit": "^8.0 || ^9.0 || ^10.0"
+    "phpunit/phpunit": "10.5.64"
   }
 }

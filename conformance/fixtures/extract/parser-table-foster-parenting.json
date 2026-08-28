@@ -1,0 +1,6 @@
+{
+  "name": "parser-table-foster-parenting",
+  "description": "Non-space table text that triggers foster parenting is rejected.",
+  "input": "<signed-section><table>Text<tr><td>Cell</td></tr></table></signed-section>",
+  "error": "parser-profile-unsupported"
+}

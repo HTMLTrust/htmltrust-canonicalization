@@ -2,36 +2,21 @@ package canonicalize
 
 import (
 	"fmt"
-	"net"
-	"net/url"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
+	"unicode/utf8"
 
-	"golang.org/x/net/idna"
+	whatwgurl "github.com/nlnwa/whatwg-url/url"
+	htmlpkg "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
-// Elements whose text content is NEVER part of the signed content. These are
-// either metadata (meta, link, script, style) or the signed-section wrapper's
-// own metadata (meta tags inside a signed-section carry claims, not content).
-// They are stripped entirely (with their contents) before extracting text.
-//
-// Go's RE2 has no backreferences, so we compile one non-greedy regex per
-// element name and apply them in sequence.
-var excludedPairTagNames = []string{"script", "style", "meta", "link", "head", "noscript"}
-
-var excludedPairREs = func() []*regexp.Regexp {
-	out := make([]*regexp.Regexp, 0, len(excludedPairTagNames))
-	for _, name := range excludedPairTagNames {
-		out = append(out, regexp.MustCompile(`(?is)<`+name+`\b[^>]*>.*?</`+name+`\s*>`))
-	}
-	return out
-}()
-
-// Self-closing and void elements (no text content) to strip.
-var voidElementsRE = regexp.MustCompile(
-	`(?i)<(meta|link|br|hr|img|input|source|track|wbr|area|base|col|embed|param)\b[^>]*/?>`,
+const (
+	maxResourceBytes   = 1024 * 1024
+	maxClaims          = 64
+	maxClaimFieldBytes = 4096
+	maxElementDepth    = 256
 )
 
 // Boundary-producing elements from the protocol draft. A boundary-producing
@@ -41,8 +26,6 @@ const blockElements = `address|article|aside|blockquote|details|dialog|div|dl|` 
 	`ol|p|pre|section|table|td|th|tr|ul`
 
 var (
-	htmlTokenRE = regexp.MustCompile(`(?is)<!--[\s\S]*?-->|<![^>]*>|</?[a-z][a-z0-9-]*(?:\s[^<>]*)?\s*/?>`)
-	tagNameRE   = regexp.MustCompile(`(?i)^</?\s*([a-z][a-z0-9-]*)`)
 	attrBodyRE  = regexp.MustCompile(`(?i)^</?\s*[a-z][a-z0-9-]*`)
 	attrRE      = regexp.MustCompile("([^\\s\"'<>/=]+)(?:\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'=<>`]+)))?")
 	blockNameRE = regexp.MustCompile(`(?i)^(` + blockElements + `)$`)
@@ -66,60 +49,9 @@ var excludedTags = map[string]bool{
 // case-sensitive per the HTML Living Standard.
 
 var (
-	namedEntityRE   = regexp.MustCompile(`&[a-zA-Z][a-zA-Z0-9]*;`)
-	decimalEntityRE = regexp.MustCompile(`&#([0-9]+);`)
-	hexEntityRE     = regexp.MustCompile(`&#[xX]([0-9a-fA-F]+);`)
+	namedEntityRE        = regexp.MustCompile(`&[a-zA-Z][a-zA-Z0-9]*;`)
+	unterminatedEntityRE = regexp.MustCompile(`&[a-zA-Z][a-zA-Z0-9]*(?:$|[^a-zA-Z0-9;])`)
 )
-
-// c1Replacements maps numeric references in the C1 range (0x80-0x9F) via the
-// windows-1252 table, per the HTML5 "numeric character reference end" state.
-var c1Replacements = map[rune]rune{
-	0x80: 0x20AC, 0x82: 0x201A, 0x83: 0x0192, 0x84: 0x201E, 0x85: 0x2026,
-	0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02C6, 0x89: 0x2030, 0x8A: 0x0160,
-	0x8B: 0x2039, 0x8C: 0x0152, 0x8E: 0x017D, 0x91: 0x2018, 0x92: 0x2019,
-	0x93: 0x201C, 0x94: 0x201D, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
-	0x98: 0x02DC, 0x99: 0x2122, 0x9A: 0x0161, 0x9B: 0x203A, 0x9C: 0x0153,
-	0x9E: 0x017E, 0x9F: 0x0178,
-}
-
-// numericCharRef applies the HTML5 rules for a parsed numeric reference:
-// null/out-of-range/surrogate collapse to U+FFFD; C1 controls map via
-// windows-1252; everything else is the literal code point.
-func numericCharRef(n int64) string {
-	if n == 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF) {
-		return "\uFFFD"
-	}
-	if r, ok := c1Replacements[rune(n)]; ok {
-		return string(r)
-	}
-	return string(rune(n))
-}
-
-func decodeEntities(text string) string {
-	text = namedEntityRE.ReplaceAllStringFunc(text, func(match string) string {
-		if v, ok := namedEntities[match]; ok {
-			return v
-		}
-		return match
-	})
-	text = decimalEntityRE.ReplaceAllStringFunc(text, func(match string) string {
-		m := decimalEntityRE.FindStringSubmatch(match)
-		n, err := strconv.ParseInt(m[1], 10, 64)
-		if err != nil {
-			return "\uFFFD"
-		}
-		return numericCharRef(n)
-	})
-	text = hexEntityRE.ReplaceAllStringFunc(text, func(match string) string {
-		m := hexEntityRE.FindStringSubmatch(match)
-		n, err := strconv.ParseInt(m[1], 16, 64)
-		if err != nil {
-			return "\uFFFD"
-		}
-		return numericCharRef(n)
-	})
-	return text
-}
 
 // ExtractCanonicalText extracts canonical content from an HTML fragment for
 // signing or verification. Mirrors the JS extractCanonicalText() reference
@@ -128,6 +60,9 @@ func decodeEntities(text string) string {
 // to line feeds, decodes entities, and runs the full text normalization
 // pipeline. The returned string is trimmed.
 func ExtractCanonicalText(html string, opts ...Options) (string, error) {
+	if len(html) > maxResourceBytes || !utf8.ValidString(html) {
+		return "", fmt.Errorf("resource-limit-exceeded")
+	}
 	var o Options
 	if len(opts) > 0 {
 		o = opts[0]
@@ -137,92 +72,298 @@ func ExtractCanonicalText(html string, opts ...Options) (string, error) {
 		return "", err
 	}
 
+	if err := validatePortableHTML(html); err != nil {
+		return "", err
+	}
+	fragment, err := htmlpkg.ParseFragment(strings.NewReader(html), &htmlpkg.Node{Type: htmlpkg.ElementNode, Data: "div", DataAtom: atom.Div})
+	if err != nil {
+		return "", fmt.Errorf("parser-profile-unsupported: %v", err)
+	}
 	var parts []string
-	index := 0
-	excludedDepth := 0
-	matches := htmlTokenRE.FindAllStringIndex(html, -1)
-	for _, loc := range matches {
-		if loc[0] > index && excludedDepth == 0 {
-			appendCanonicalPart(&parts, NormalizeText(decodeEntities(html[index:loc[0]]), o))
-		}
-		token := html[loc[0]:loc[1]]
-		index = loc[1]
+	if err := walkHTMLNodes(fragment, &parts, base, o); err != nil {
+		return "", err
+	}
+	result := finalizeCanonicalParts(parts)
+	if len(result) > maxResourceBytes {
+		return "", fmt.Errorf("resource-limit-exceeded")
+	}
+	return result, nil
+}
 
-		nameMatch := tagNameRE.FindStringSubmatch(token)
-		if len(nameMatch) < 2 {
-			continue
-		}
-		name := strings.ToLower(nameMatch[1])
-		closing := strings.HasPrefix(strings.TrimSpace(token), "</")
-		selfClosing := strings.HasSuffix(strings.TrimSpace(token), "/>") || voidTags[name]
-		excluded := excludedTags[name]
-
-		if closing {
-			if excluded && excludedDepth > 0 {
-				excludedDepth--
-				continue
+// ExtractClaimsFromSignedSection returns claim metadata from direct child meta
+// elements. If the fragment contains a top-level signed-section, that element
+// supplies the children; otherwise the fragment is treated as section inner HTML.
+func ExtractClaimsFromSignedSection(source string) (map[string]string, error) {
+	if len(source) > maxResourceBytes || !utf8.ValidString(source) {
+		return nil, fmt.Errorf("resource-limit-exceeded")
+	}
+	if err := validatePortableHTML(source); err != nil {
+		return nil, err
+	}
+	fragment, err := htmlpkg.ParseFragment(strings.NewReader(source), &htmlpkg.Node{Type: htmlpkg.ElementNode, Data: "div", DataAtom: atom.Div})
+	if err != nil {
+		return nil, fmt.Errorf("parser-profile-unsupported: %v", err)
+	}
+	children := fragment
+	for _, node := range fragment {
+		if node.Type == htmlpkg.ElementNode && strings.EqualFold(node.Data, "signed-section") {
+			children = children[:0]
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				children = append(children, child)
 			}
-			if excludedDepth > 0 {
-				continue
-			}
-			if blockNameRE.MatchString(name) {
-				appendCanonicalPart(&parts, "\n")
-			}
-			continue
-		}
-
-		if excluded {
-			if !selfClosing {
-				excludedDepth++
-			}
-			continue
-		}
-		if excludedDepth > 0 {
-			continue
-		}
-
-		attrs := parseAttributes(token)
-		if err := appendAttributeRecords(&parts, name, attrs, base); err != nil {
-			return "", err
-		}
-		if name == "br" {
-			appendCanonicalPart(&parts, "\n")
-		}
-		if selfClosing && blockNameRE.MatchString(name) {
-			appendCanonicalPart(&parts, "\n")
+			break
 		}
 	}
-	if index < len(html) && excludedDepth == 0 {
-		appendCanonicalPart(&parts, NormalizeText(decodeEntities(html[index:]), o))
+	claims := make(map[string]string)
+	for _, node := range children {
+		if node.Type != htmlpkg.ElementNode || !strings.EqualFold(node.Data, "meta") {
+			continue
+		}
+		attrs := make(map[string]string, len(node.Attr))
+		for _, attr := range node.Attr {
+			attrs[strings.ToLower(attr.Key)] = attr.Val
+		}
+		rawName, hasName := attrs["name"]
+		rawContent, hasContent := attrs["content"]
+		if !hasName || !hasContent {
+			return nil, fmt.Errorf("claim-malformed")
+		}
+		if len(claims) >= maxClaims {
+			return nil, fmt.Errorf("resource-limit-exceeded")
+		}
+		name, err := NormalizeChecked(rawName)
+		if err != nil {
+			return nil, err
+		}
+		content, err := NormalizeChecked(rawContent)
+		if err != nil {
+			return nil, err
+		}
+		name = strings.TrimSpace(name)
+		content = strings.TrimSpace(content)
+		if name == "" {
+			return nil, fmt.Errorf("claim-malformed")
+		}
+		if len([]byte(name)) > maxClaimFieldBytes || len([]byte(content)) > maxClaimFieldBytes {
+			return nil, fmt.Errorf("resource-limit-exceeded")
+		}
+		if _, duplicate := claims[name]; duplicate {
+			return nil, fmt.Errorf("claim-duplicate")
+		}
+		claims[name] = content
 	}
-	return finalizeCanonicalParts(parts), nil
+	return claims, nil
+}
+
+// x/net/html repairs malformed input and does not expose parser diagnostics.
+// Keep a strict source preflight so repaired trees cannot enter the portable
+// profile silently.
+func validatePortableHTML(source string) error {
+	stack := []string{}
+	t := htmlpkg.NewTokenizer(strings.NewReader(source))
+	for {
+		tt := t.Next()
+		if tt == htmlpkg.ErrorToken {
+			break
+		}
+		switch tt {
+		case htmlpkg.StartTagToken, htmlpkg.SelfClosingTagToken:
+			if err := validatePortableReferences(string(t.Raw())); err != nil {
+				return err
+			}
+			if err := validateDuplicateAttributes(string(t.Raw())); err != nil {
+				return err
+			}
+			nameBytes, more := t.TagName()
+			name := strings.ToLower(string(nameBytes))
+			if name == "svg" || name == "math" || name == "foreignobject" {
+				return fmt.Errorf("parser-profile-unsupported")
+			}
+			seen := map[string]bool{}
+			for more {
+				keyBytes, _, next := t.TagAttr()
+				key := strings.ToLower(string(keyBytes))
+				if seen[key] {
+					return fmt.Errorf("parser-profile-unsupported")
+				}
+				seen[key] = true
+				more = next
+			}
+			if tt == htmlpkg.StartTagToken && !voidTags[name] {
+				if len(stack) >= maxElementDepth {
+					return fmt.Errorf("resource-limit-exceeded")
+				}
+				stack = append(stack, name)
+			}
+		case htmlpkg.EndTagToken:
+			nameBytes, _ := t.TagName()
+			name := strings.ToLower(string(nameBytes))
+			if len(stack) == 0 || stack[len(stack)-1] != name {
+				return fmt.Errorf("parser-profile-unsupported")
+			}
+			stack = stack[:len(stack)-1]
+		case htmlpkg.TextToken:
+			rawText := len(stack) > 0 && (stack[len(stack)-1] == "script" || stack[len(stack)-1] == "style" || stack[len(stack)-1] == "iframe")
+			if !rawText {
+				if err := validatePortableReferences(string(t.Raw())); err != nil {
+					return err
+				}
+			}
+			if len(stack) > 0 && stack[len(stack)-1] == "table" && strings.TrimSpace(string(t.Raw())) != "" {
+				return fmt.Errorf("parser-profile-unsupported")
+			}
+		case htmlpkg.CommentToken:
+			raw := string(t.Raw())
+			if !strings.HasPrefix(raw, "<!--") || !strings.HasSuffix(raw, "-->") {
+				return fmt.Errorf("parser-profile-unsupported")
+			}
+			body := raw[4 : len(raw)-3]
+			if strings.Contains(body, "--") || strings.HasSuffix(body, "-") {
+				return fmt.Errorf("parser-profile-unsupported")
+			}
+		case htmlpkg.DoctypeToken:
+			return fmt.Errorf("parser-profile-unsupported")
+		}
+	}
+	if len(stack) != 0 {
+		return fmt.Errorf("parser-profile-unsupported: unclosed %v", stack)
+	}
+	return nil
+}
+
+func validatePortableReferences(source string) error {
+	if unterminatedEntityRE.MatchString(source) || hasUnterminatedNumericReference(source) {
+		return fmt.Errorf("parser-profile-unsupported")
+	}
+	for _, loc := range namedEntityRE.FindAllStringIndex(source, -1) {
+		if _, ok := namedEntities[source[loc[0]:loc[1]]]; !ok {
+			return fmt.Errorf("parser-profile-unsupported: entity %s", source[loc[0]:loc[1]])
+		}
+	}
+	return nil
+}
+
+func hasUnterminatedNumericReference(source string) bool {
+	for i := 0; i+2 < len(source); i++ {
+		if source[i] != '&' || source[i+1] != '#' {
+			continue
+		}
+		j := i + 2
+		if j < len(source) && (source[j] == 'x' || source[j] == 'X') {
+			j++
+			start := j
+			for j < len(source) && ((source[j] >= '0' && source[j] <= '9') ||
+				(source[j] >= 'a' && source[j] <= 'f') || (source[j] >= 'A' && source[j] <= 'F')) {
+				j++
+			}
+			if j == start {
+				continue
+			}
+		} else {
+			start := j
+			for j < len(source) && source[j] >= '0' && source[j] <= '9' {
+				j++
+			}
+			if j == start {
+				continue
+			}
+		}
+		if j >= len(source) || source[j] != ';' {
+			return true
+		}
+	}
+	return false
+}
+
+func validateDuplicateAttributes(token string) error {
+	body := attrBodyRE.ReplaceAllString(token, "")
+	body = strings.TrimSuffix(strings.TrimSpace(body), ">")
+	body = strings.TrimSuffix(strings.TrimSpace(body), "/")
+	seen := map[string]bool{}
+	for _, match := range attrRE.FindAllStringSubmatch(body, -1) {
+		name := strings.ToLower(match[1])
+		if seen[name] {
+			return fmt.Errorf("parser-profile-unsupported")
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+func walkHTMLNodes(nodes []*htmlpkg.Node, parts *[]string, base *whatwgurl.Url, o Options) error {
+	for _, node := range nodes {
+		switch node.Type {
+		case htmlpkg.TextNode:
+			normalized, err := NormalizeTextChecked(node.Data, o)
+			if err != nil {
+				return err
+			}
+			appendCanonicalPart(parts, strings.ReplaceAll(normalized, "@", "@@"))
+		case htmlpkg.CommentNode, htmlpkg.DoctypeNode:
+			continue
+		case htmlpkg.ElementNode:
+			name := strings.ToLower(node.Data)
+			if excludedTags[name] {
+				continue
+			}
+			attrs := make(map[string]string, len(node.Attr))
+			for _, attr := range node.Attr {
+				attrs[strings.ToLower(attr.Key)] = attr.Val
+			}
+			if err := appendAttributeRecords(parts, name, attrs, base); err != nil {
+				return err
+			}
+			if name == "br" {
+				appendCanonicalPart(parts, "\n")
+			} else {
+				children := make([]*htmlpkg.Node, 0)
+				for child := node.FirstChild; child != nil; child = child.NextSibling {
+					children = append(children, child)
+				}
+				if err := walkHTMLNodes(children, parts, base, o); err != nil {
+					return err
+				}
+				if blockNameRE.MatchString(name) || name == "signed-section" {
+					appendCanonicalPart(parts, "\n")
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // CanonicalizeClaims serializes a claims map as sorted "name:content\n"
 // records. Both names and values are pushed through NormalizeText before
 // serialization so the output is independent of trivial Unicode noise.
-// Mirrors the JS canonicalizeClaims() reference implementation.
-func CanonicalizeClaims(claims map[string]string) string {
-	s, _ := CanonicalizeClaimsStrict(claims)
-	return s
-}
-
-// CanonicalizeClaimsStrict is like CanonicalizeClaims but enforces the draft's
-// MUST-fail rules: an empty normalized name is "claim-malformed", and two
-// names that normalize to the same value are "claim-duplicate". Names are
-// sorted by their UTF-8 byte sequence.
-func CanonicalizeClaimsStrict(claims map[string]string) (string, error) {
+// It returns an error for the profile's MUST-fail conditions: an empty
+// normalized name is "claim-malformed", and two names that normalize to the
+// same value are "claim-duplicate". Names are sorted by UTF-8 bytes.
+func CanonicalizeClaims(claims map[string]string) (string, error) {
+	if len(claims) > maxClaims {
+		return "", fmt.Errorf("resource-limit-exceeded")
+	}
 	type entry struct{ name, value string }
 	entries := make([]entry, 0, len(claims))
 	seen := make(map[string]bool, len(claims))
 	for k, v := range claims {
-		name := strings.TrimSpace(NormalizeText(k))
-		value := strings.TrimSpace(NormalizeText(v))
+		name, err := NormalizeChecked(k)
+		if err != nil {
+			return "", err
+		}
+		value, err := NormalizeChecked(v)
+		if err != nil {
+			return "", err
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
 		if name == "" {
 			return "", fmt.Errorf("claim-malformed")
 		}
 		if seen[name] {
 			return "", fmt.Errorf("claim-duplicate")
+		}
+		if len([]byte(name)) > maxClaimFieldBytes || len([]byte(value)) > maxClaimFieldBytes {
+			return "", fmt.Errorf("resource-limit-exceeded")
 		}
 		seen[name] = true
 		entries = append(entries, entry{name, value})
@@ -232,12 +373,28 @@ func CanonicalizeClaimsStrict(claims map[string]string) (string, error) {
 	})
 	var b strings.Builder
 	for _, e := range entries {
-		b.WriteString(e.name)
+		b.WriteString(escapeClaimField(e.name))
 		b.WriteByte(':')
-		b.WriteString(e.value)
+		b.WriteString(escapeClaimField(e.value))
 		b.WriteByte('\n')
 	}
-	return b.String(), nil
+	result := b.String()
+	if len(result) > maxResourceBytes {
+		return "", fmt.Errorf("resource-limit-exceeded")
+	}
+	return result, nil
+}
+
+// CanonicalizeClaimsStrict is retained as a compatibility alias. Both public
+// entry points enforce the same fail-closed profile.
+func CanonicalizeClaimsStrict(claims map[string]string) (string, error) {
+	return CanonicalizeClaims(claims)
+}
+
+func escapeClaimField(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, ":", `\:`)
+	return strings.ReplaceAll(value, "\n", `\n`)
 }
 
 func appendCanonicalPart(parts *[]string, value string) {
@@ -259,28 +416,7 @@ func finalizeCanonicalParts(parts []string) string {
 	return strings.Trim(text, " \n")
 }
 
-func parseAttributes(token string) map[string]string {
-	body := attrBodyRE.ReplaceAllString(token, "")
-	body = strings.TrimSuffix(strings.TrimSpace(body), ">")
-	body = strings.TrimSuffix(strings.TrimSpace(body), "/")
-	attrs := map[string]string{}
-	for _, m := range attrRE.FindAllStringSubmatch(body, -1) {
-		if len(m) == 0 || m[1] == "" {
-			continue
-		}
-		value := ""
-		for _, candidate := range m[2:] {
-			if candidate != "" {
-				value = candidate
-				break
-			}
-		}
-		attrs[strings.ToLower(m[1])] = decodeEntities(value)
-	}
-	return attrs
-}
-
-func appendAttributeRecords(parts *[]string, elementName string, attrs map[string]string, base *url.URL) error {
+func appendAttributeRecords(parts *[]string, elementName string, attrs map[string]string, base *whatwgurl.Url) error {
 	for _, attrName := range signedAttrs {
 		raw, ok := attrs[attrName]
 		if !ok {
@@ -288,19 +424,22 @@ func appendAttributeRecords(parts *[]string, elementName string, attrs map[strin
 		}
 		value := raw
 		if attrName == "href" || attrName == "src" {
-			if base == nil && !hasURLScheme(value) {
-				// Relative URL with no base cannot be resolved. The draft
-				// (§4.3.2) requires a hard failure rather than a silent skip.
-				return fmt.Errorf("attribute-canonicalization-failed: %s.%s: relative URL with no base", elementName, attrName)
-			}
 			normalized, err := normalizeURLAttribute(value, base)
 			if err != nil {
+				if strings.Contains(err.Error(), "url-policy-violation") {
+					return err
+				}
 				return fmt.Errorf("attribute-canonicalization-failed: %s.%s: %w", elementName, attrName, err)
 			}
 			value = normalized
 		} else {
-			value = strings.TrimSpace(NormalizeText(value))
+			normalized, err := NormalizeTextChecked(value)
+			if err != nil {
+				return fmt.Errorf("attribute-canonicalization-failed: %s.%s: %w", elementName, attrName, err)
+			}
+			value = strings.TrimSpace(normalized)
 		}
+		value = strings.ReplaceAll(value, "@", "@@")
 		if strings.ContainsRune(value, '\n') {
 			return fmt.Errorf("attribute-canonicalization-failed: %s.%s contains newline", elementName, attrName)
 		}
@@ -315,151 +454,42 @@ func appendAttributeRecords(parts *[]string, elementName string, attrs map[strin
 	return nil
 }
 
-func parseBaseURL(raw string) (*url.URL, error) {
+func parseBaseURL(raw string) (*whatwgurl.Url, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	base, err := url.Parse(raw)
+	base, err := whatwgurl.Parse(raw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("attribute-canonicalization-failed: %w", err)
 	}
-	if !base.IsAbs() || base.Host == "" {
-		return nil, fmt.Errorf("base URL must be absolute")
+	if base.Scheme() != "https" || base.Hostname() == "" || base.Username() != "" || base.Password() != "" {
+		return nil, fmt.Errorf("url-policy-violation")
 	}
 	return base, nil
 }
 
-func hasURLScheme(raw string) bool {
-	i := strings.IndexByte(raw, ':')
-	if i <= 0 {
-		return false
-	}
-	for _, r := range raw[:i] {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '+' || r == '-' || r == '.' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// removeDotSegments implements RFC 3986 §5.2.4, matching the WHATWG URL path
-// normalization the reference JS/Rust bindings perform via `new URL`.
-func removeDotSegments(path string) string {
-	out := ""
-	in := path
-	for len(in) > 0 {
-		switch {
-		case strings.HasPrefix(in, "../"):
-			in = in[3:]
-		case strings.HasPrefix(in, "./"):
-			in = in[2:]
-		case strings.HasPrefix(in, "/./"):
-			in = "/" + in[3:]
-		case in == "/.":
-			in = "/"
-		case strings.HasPrefix(in, "/../"):
-			in = "/" + in[4:]
-			if i := strings.LastIndexByte(out, '/'); i >= 0 {
-				out = out[:i]
-			} else {
-				out = ""
-			}
-		case in == "/..":
-			in = "/"
-			if i := strings.LastIndexByte(out, '/'); i >= 0 {
-				out = out[:i]
-			} else {
-				out = ""
-			}
-		case in == "." || in == "..":
-			in = ""
-		default:
-			start := 0
-			if strings.HasPrefix(in, "/") {
-				start = 1
-			}
-			if idx := strings.IndexByte(in[start:], '/'); idx < 0 {
-				out += in
-				in = ""
-			} else {
-				out += in[:start+idx]
-				in = in[start+idx:]
-			}
+// normalizeURLAttribute parses and serializes an href/src with the WHATWG URL algorithm.
+func normalizeURLAttribute(raw string, base *whatwgurl.Url) (string, error) {
+	for _, r := range raw {
+		if r <= 0x1f || r == 0x7f {
+			return "", fmt.Errorf("url-policy-violation")
 		}
 	}
-	return out
-}
-
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
+	var u *whatwgurl.Url
+	var err error
+	if base != nil {
+		u, err = base.Parse(raw)
+	} else {
+		u, err = whatwgurl.Parse(raw)
 	}
-	return true
-}
-
-// normalizeURLAttribute serializes an href/src value using the Web (WHATWG)
-// URL serializer semantics: lowercase scheme + host, IDNA/punycode host, strip
-// default ports, resolve dot-segments, preserve query and fragment.
-func normalizeURLAttribute(raw string, base *url.URL) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return "", err
 	}
-	if base != nil {
-		u = base.ResolveReference(u)
+	if u.Scheme() != "https" || u.Username() != "" || u.Password() != "" {
+		return "", fmt.Errorf("url-policy-violation")
 	}
-	if !u.IsAbs() {
-		return "", fmt.Errorf("URL must be absolute")
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("attribute-canonicalization-failed")
 	}
-	if u.Host == "" {
-		// Opaque URL with no authority (mailto:, tel:, javascript:, data:,
-		// about:, sms:, ...). The WHATWG URL parser accepts these; serialize
-		// scheme + opaque remainder verbatim (scheme lowercased), matching
-		// new URL().href. No host/port/dot-segment normalization applies.
-		rest := u.Opaque
-		if u.RawQuery != "" {
-			rest += "?" + u.RawQuery
-		}
-		if u.Fragment != "" {
-			rest += "#" + u.EscapedFragment()
-		}
-		return strings.ToLower(u.Scheme) + ":" + rest, nil
-	}
-	if u.User != nil {
-		return "", fmt.Errorf("userinfo not allowed in signed URL")
-	}
-	u.Scheme = strings.ToLower(u.Scheme)
-	host := strings.ToLower(u.Hostname())
-	if !isASCII(host) {
-		ascii, err := idna.Lookup.ToASCII(host)
-		if err != nil {
-			return "", fmt.Errorf("idna: %w", err)
-		}
-		host = ascii
-	}
-	port := u.Port()
-	if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
-		port = ""
-	}
-	if strings.Contains(host, ":") {
-		host = "[" + strings.Trim(host, "[]") + "]"
-	}
-	if port != "" {
-		host = net.JoinHostPort(strings.Trim(host, "[]"), port)
-	}
-	u.Host = host
-	cleaned := removeDotSegments(u.EscapedPath())
-	if cleaned == "" {
-		cleaned = "/"
-	}
-	u.RawPath = cleaned
-	if unesc, err := url.PathUnescape(cleaned); err == nil {
-		u.Path = unesc
-	} else {
-		u.Path = cleaned
-	}
-	return u.String(), nil
+	return u.Href(false), nil
 }

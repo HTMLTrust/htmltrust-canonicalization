@@ -8,8 +8,10 @@
 package canonicalize
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -51,10 +53,17 @@ type Options struct {
 	BaseURL string
 }
 
-// NormalizeText applies all 8 phases of the HTMLTrust canonicalization spec.
+// NormalizeText is the legacy 0.2 compatibility wrapper for the eight
+// normalization phases. It is non-fallible and does not enforce resource
+// limits. The normative v1 entry point for untrusted input is
+// NormalizeTextChecked.
 //
 // Apply after extracting text from DOM, before hashing.
 func NormalizeText(text string, opts ...Options) string {
+	return normalizeText(text, opts...)
+}
+
+func normalizeText(text string, opts ...Options) string {
 	var o Options
 	if len(opts) > 0 {
 		o = opts[0]
@@ -85,12 +94,45 @@ func NormalizeText(text string, opts ...Options) string {
 
 	// Phase 5: Other punctuation.
 	text = ellipsisRE.ReplaceAllString(text, "...")
-
 	return text
 }
 
-// Normalize is a convenience function that normalizes and trims the text.
+// NormalizeTextChecked is the normative v1, fallible normalization API for
+// untrusted input. It rejects invalid UTF-8 and enforces the 1 MiB input and
+// output limits used by the HTMLTrust resource profile.
+func NormalizeTextChecked(text string, opts ...Options) (string, error) {
+	if len(text) > maxResourceBytes {
+		return "", fmt.Errorf("resource-limit-exceeded")
+	}
+	if !utf8.ValidString(text) {
+		return "", fmt.Errorf("invalid-utf8")
+	}
+	result := normalizeText(text, opts...)
+	if len(result) > maxResourceBytes {
+		return "", fmt.Errorf("resource-limit-exceeded")
+	}
+	return result, nil
+}
+
+// Normalize is the legacy 0.2 compatibility wrapper that normalizes and trims
+// text. It is non-fallible and does not enforce resource limits. The normative
+// v1 entry point is NormalizeChecked.
 func Normalize(text string) string {
-	text = NormalizeText(text)
+	text = normalizeText(text)
 	return strings.TrimSpace(text)
+}
+
+// NormalizeChecked is the normative v1, fallible counterpart to Normalize. It
+// applies the same normalization and trimming while enforcing the 1 MiB input
+// and output limits.
+func NormalizeChecked(text string) (string, error) {
+	result, err := NormalizeTextChecked(text)
+	if err != nil {
+		return "", err
+	}
+	result = strings.TrimSpace(result)
+	if len(result) > maxResourceBytes {
+		return "", fmt.Errorf("resource-limit-exceeded")
+	}
+	return result, nil
 }

@@ -1,0 +1,6 @@
+{
+  "name": "parser-unclosed-comment",
+  "description": "An unclosed HTML comment is outside the portable parser profile.",
+  "input": "<!-- unclosed x",
+  "error": "parser-profile-unsupported"
+}

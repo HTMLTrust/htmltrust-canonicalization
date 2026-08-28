@@ -1,0 +1,9 @@
+{
+  "name": "resource-repeat-limit",
+  "description": "Fixture repeat expansion applies to claim values before the 4 KiB field limit.",
+  "input": {
+    "claim": "v"
+  },
+  "repeat": 4097,
+  "error": "resource-limit-exceeded"
+}

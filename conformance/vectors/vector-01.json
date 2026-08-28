@@ -1,5 +1,5 @@
 {
-  "description": "HTMLTrust end-to-end test vector 01 (Ed25519). Every signer and verifier MUST reproduce contentHash, claimsHash, signingPayload and signature exactly.",
+  "description": "HTMLTrust htmltrust-signature-v1 end-to-end Ed25519 vector.",
   "algorithm": "ed25519",
   "key": {
     "seedHex": "68746d6c74727573742d746573742d766563746f722d656432353531392d3031",
@@ -7,20 +7,22 @@
     "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----\n"
   },
   "input": {
-    "html": "<signed-section><meta name=\"author\" content=\"Ada Lovelace\"><meta name=\"signed-at\" content=\"2026-01-15T12:00:00Z\"><meta name=\"license\" content=\"CC-BY-4.0\"><h1>On Analytical Engines</h1><p>The engine weaves algebraic patterns &mdash; just as the loom weaves flowers.</p><p>See <a href=\"/notes/engine\">the notes</a> and <img src=\"/img/ada.png\" alt=\"Portrait of Ada\">.</p></signed-section>",
+    "html": "<signed-section><meta name=\"author\" content=\"Ada Lovelace\"><meta name=\"signed-at\" content=\"2026-01-15T12:00:00Z\"><meta name=\"claim:License\" content=\"CC-BY-4.0\"><h1>On Analytical Engines</h1><p>The engine weaves algebraic patterns &mdash; just as the loom weaves flowers.</p><p>See <a href=\"/notes/engine\">the notes</a> and <img src=\"/img/ada.png\" alt=\"Portrait of Ada\">.</p></signed-section>",
     "baseURL": "https://example.com/essays/engines",
-    "domain": "https://example.com",
+    "documentURL": "HTTPS://EXAMPLE.COM:443/essays/engines#analysis",
+    "scope": "url",
+    "keyid": "https://keys.example/alice-2026.json",
     "signedAt": "2026-01-15T12:00:00Z"
   },
   "canonicalContent": "On Analytical Engines\nThe engine weaves algebraic patterns - just as the loom weaves flowers.\nSee @attr:a:href:https://example.com/notes/engine\nthe notes and @attr:img:src:https://example.com/img/ada.png\n@attr:img:alt:Portrait of Ada\n.",
   "contentHash": "sha256:IVAwpRTDujszmYf76W497alVTtxGCgtJtQlasiFSCM8",
   "claims": {
     "author": "Ada Lovelace",
-    "signed-at": "2026-01-15T12:00:00Z",
-    "license": "CC-BY-4.0"
+    "claim:License": "CC-BY-4.0",
+    "signed-at": "2026-01-15T12:00:00Z"
   },
-  "canonicalClaims": "author:Ada Lovelace\nlicense:CC-BY-4.0\nsigned-at:2026-01-15T12:00:00Z\n",
-  "claimsHash": "sha256:LRDw8hP30g9AxXzw8wteFOZpDyD/hWUyP25Be8C0hBs",
-  "signingPayload": "sha256:IVAwpRTDujszmYf76W497alVTtxGCgtJtQlasiFSCM8:sha256:LRDw8hP30g9AxXzw8wteFOZpDyD/hWUyP25Be8C0hBs:https://example.com:2026-01-15T12:00:00Z",
-  "signature": "kivLG5v5apFvXL4R7glxzg6zqpAt9r7gbiKRK3EA0W3wLePdn/Jde2lIdD1a78TdsaxZyRgDF/6u/goO6NcKDg"
+  "canonicalClaims": "author:Ada Lovelace\nclaim\\:License:CC-BY-4.0\nsigned-at:2026-01-15T12\\:00\\:00Z\n",
+  "claimsHash": "sha256:Fk5udwCnu1au8v5oaBsU+aSB5S2zSLqoF0xXO6HrIn4",
+  "signingPayload": "{\"algorithm\":\"ed25519\",\"attributeProfile\":\"htmltrust-attrs-v1\",\"canonicalizationProfile\":\"htmltrust-c14n-v1\",\"claimsHash\":\"sha256:Fk5udwCnu1au8v5oaBsU+aSB5S2zSLqoF0xXO6HrIn4\",\"contentHash\":\"sha256:IVAwpRTDujszmYf76W497alVTtxGCgtJtQlasiFSCM8\",\"context\":\"https://htmltrust.org/protocol/signed-section\",\"keyid\":\"https://keys.example/alice-2026.json\",\"location\":\"https://example.com/essays/engines\",\"profile\":\"htmltrust-signature-v1\",\"scope\":\"url\",\"signedAt\":\"2026-01-15T12:00:00Z\",\"urlProfile\":\"htmltrust-safe-url-v1\"}",
+  "signature": "m0ykSPqUWdyZprUAqosOB2IEK2XsKp7auPIWz80/2ht+LwT1LiNcsLL6cn2IkmTZFG9ptLiUHaB1crPJgBw7BA"
 }

@@ -10,8 +10,11 @@ contribute, where whitespace separators go) is identical.
 
 from __future__ import annotations
 
+import re
+
 from bs4 import BeautifulSoup, NavigableString, Tag
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from html5lib.html5parser import HTMLParser
+from pywhatwgurl import URL
 
 from ._normalize import normalize_text
 
@@ -34,9 +37,55 @@ _BLOCK_TAGS = frozenset({
     "h1", "h2", "h3", "h4", "h5", "h6",
     "header", "hgroup", "hr", "li", "main", "nav", "ol",
     "p", "pre", "section", "table",
-    "tr", "td", "th", "ul",
+    "tr", "td", "th", "ul", "signed-section",
 })
 _SIGNED_ATTRS = ("href", "src", "alt", "aria-label")
+_MAX_SOURCE_BYTES = 1024 * 1024
+_MAX_OUTPUT_BYTES = 1024 * 1024
+_MAX_ELEMENT_DEPTH = 256
+_HTML_TOKEN_RE = re.compile(
+    r"<!--.*?-->|<![^>]*>|</?\s*[a-z][^\t\n\f\r />]*(?:[^>\"']+|\"[^\"]*\"|'[^']*')*>",
+    re.I | re.S,
+)
+_TAG_NAME_RE = re.compile(r"^</?\s*([a-z][^\t\n\f\r />]*)", re.I)
+_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
+
+
+def _preflight_source(html: str) -> None:
+    """Validate the portable-1 source profile before tree construction.
+
+    html5lib exposes tokenizer/tree-builder diagnostics, which must be
+    checked before BeautifulSoup receives the recovered tree.  A few HTML5
+    repairs (notably table foster parenting and foreign content) are not
+    reported as parse errors by html5lib, so those profile cases are checked
+    against the source as well.
+    """
+    try:
+        source_bytes = html.encode("utf-8", "strict")
+    except UnicodeEncodeError as exc:
+        raise ValueError("parser-profile-unsupported") from exc
+    if len(source_bytes) > _MAX_SOURCE_BYTES:
+        raise ValueError("resource-limit-exceeded")
+
+    # Count source element nesting before handing the document to an HTML5
+    # tree builder. This keeps the ceiling independent of BeautifulSoup's
+    # synthetic html/head/body wrapper nodes and makes the limit effective
+    # before traversal can recurse.
+    profile_source = re.sub(
+        r"(<\s*(script|style|iframe)\b(?:[^>\"']+|\"[^\"]*\"|'[^']*')*>).*?(</\s*\2\s*>)",
+        r"\1\3",
+        html,
+        flags=re.I | re.S,
+    )
+    _check_source_depth(profile_source)
+
+    parser = HTMLParser(namespaceHTMLElements=False, strict=False)
+    parser.parseFragment(html)
+    if parser.errors:
+        raise ValueError("parser-profile-unsupported")
 
 
 def extract_canonical_text(
@@ -69,7 +118,12 @@ def extract_canonical_text(
     if not isinstance(html, str):
         raise TypeError("extract_canonical_text expects a str")
 
-    soup = BeautifulSoup(html, "html.parser")
+    _preflight_source(html)
+    base_url = _validate_base_url(base_url)
+    # BeautifulSoup's html5lib backend exposes the same HTML5 tree model as
+    # the diagnostics pass above.  The source has already been accepted, so
+    # no parser repair is silently used as verification input.
+    soup = BeautifulSoup(html, "html5lib")
 
     # Remove excluded elements (and their text content) outright.
     for tag_name in _EXCLUDED_TAGS:
@@ -81,6 +135,58 @@ def extract_canonical_text(
 
     text = "".join(parts)
     return _finalize_parts(text)
+
+
+def _check_source_depth(source: str) -> None:
+    """Validate source nesting and reject parser repairs.
+
+    HTML5 parsers implicitly close elements and foster-parent text around a
+    table. Those repairs are outside the portable profile, so this small
+    source stack requires explicit matching end tags and checks direct table
+    text before tree construction.
+    """
+    stack: list[str] = []
+    cursor = 0
+    for match in _HTML_TOKEN_RE.finditer(source):
+        text = source[cursor:match.start()]
+        if stack and stack[-1] == "table" and text.strip():
+            raise ValueError("parser-profile-unsupported")
+        cursor = match.end()
+
+        token = match.group(0)
+        name_match = _TAG_NAME_RE.match(token)
+        if not name_match:
+            continue
+        name = name_match.group(1).lower()
+        if token.lstrip().startswith("</"):
+            if not stack or stack[-1] != name:
+                raise ValueError("parser-profile-unsupported")
+            stack.pop()
+            continue
+        if name in {"svg", "math", "foreignobject"}:
+            raise ValueError("parser-profile-unsupported")
+        if name not in _VOID_TAGS and not re.search(r"/\s*>$", token):
+            stack.append(name)
+            if len(stack) > _MAX_ELEMENT_DEPTH:
+                raise ValueError("resource-limit-exceeded")
+
+    if stack and stack[-1] == "table" and source[cursor:].strip():
+        raise ValueError("parser-profile-unsupported")
+    if stack:
+        raise ValueError("parser-profile-unsupported")
+
+
+def _validate_base_url(base_url: str | None) -> str | None:
+    """Validate and serialize the optional document base URL up front."""
+    if base_url is None or base_url == "":
+        return None
+    try:
+        base = URL(base_url)
+    except Exception as exc:
+        raise ValueError("attribute-canonicalization-failed") from exc
+    if base.protocol != "https:" or not base.hostname or base.username or base.password:
+        raise ValueError("url-policy-violation")
+    return str(base)
 
 
 def _walk(
@@ -100,7 +206,7 @@ def _walk(
             cls_name = type(child).__name__
             if cls_name in ("Comment", "Doctype", "CData", "ProcessingInstruction"):
                 continue
-            out.append(normalize_text(str(child), preserve_whitespace))
+            out.append(_escape_text(normalize_text(str(child), preserve_whitespace)))
         elif isinstance(child, Tag):
             name = child.name.lower() if child.name else ""
             is_block = name in _BLOCK_TAGS
@@ -127,95 +233,43 @@ def _append_attribute_records(
             raw_value = " ".join(str(v) for v in raw_value)
         value = str(raw_value)
         if attr_name in ("href", "src"):
-            if base_url is None and not urlsplit(value).scheme:
-                # Relative URL with no base cannot be resolved. The draft
-                # (§4.3.2) requires a hard failure rather than a silent skip.
-                raise ValueError("attribute-canonicalization-failed")
             value = _canonicalize_url(value, base_url)
         else:
             value = normalize_text(value).strip()
         if "\n" in value:
             raise ValueError("attribute-canonicalization-failed")
+        value = value.replace("@", "@@")
         if out and out[-1] and not out[-1][-1].isspace():
             out.append("\n")
         out.append(f"@attr:{element_name}:{attr_name}:{value}\n")
 
 
-def _remove_dot_segments(path: str) -> str:
-    """RFC 3986 §5.2.4 remove_dot_segments, matching the WHATWG URL path
-    normalization the reference JS/Rust bindings perform via ``new URL``."""
-    out = ""
-    inp = path
-    while inp:
-        if inp.startswith("../"):
-            inp = inp[3:]
-        elif inp.startswith("./"):
-            inp = inp[2:]
-        elif inp.startswith("/./"):
-            inp = "/" + inp[3:]
-        elif inp == "/.":
-            inp = "/"
-        elif inp.startswith("/../"):
-            inp = "/" + inp[4:]
-            out = out[: out.rfind("/")] if "/" in out else ""
-        elif inp == "/..":
-            inp = "/"
-            out = out[: out.rfind("/")] if "/" in out else ""
-        elif inp in (".", ".."):
-            inp = ""
-        else:
-            j = inp.find("/", 1) if inp.startswith("/") else inp.find("/")
-            if j == -1:
-                out += inp
-                inp = ""
-            else:
-                out += inp[:j]
-                inp = inp[j:]
-    return out
-
-
 def _canonicalize_url(value: str, base_url: str | None) -> str:
-    """Canonicalize an href/src value using the Web (WHATWG) URL serializer
-    semantics: lowercase scheme + host, IDNA/punycode host, strip default
-    ports, resolve dot-segments, preserve query and fragment. Produces the
-    same bytes as ``new URL(value, base).href`` for the cases the conformance
-    vectors exercise (draft §4.3.2)."""
+    """Parse and serialize an href/src with the WHATWG URL algorithm."""
+    # URL preprocessing must not erase controls before policy validation.
+    if any(ord(ch) <= 0x1F or ord(ch) == 0x7F for ch in value):
+        raise ValueError("url-policy-violation")
     try:
-        absolute = urljoin(base_url or "", value)
-        parts = urlsplit(absolute)
-    except Exception as exc:  # pragma: no cover - defensive URL parser guard
+        base = URL(base_url) if base_url is not None else None
+    except Exception as exc:
         raise ValueError("attribute-canonicalization-failed") from exc
-    if not parts.scheme:
+    if base is not None:
+        if base.protocol != "https:" or not base.hostname or base.username or base.password:
+            raise ValueError("url-policy-violation")
+    try:
+        parsed = URL(value, str(base) if base is not None else None)
+    except Exception as exc:
+        raise ValueError("attribute-canonicalization-failed") from exc
+    if parsed.protocol != "https:" or parsed.username or parsed.password:
+        raise ValueError("url-policy-violation")
+    if not parsed.hostname:
         raise ValueError("attribute-canonicalization-failed")
-    if not parts.netloc:
-        # Opaque URL with no authority (mailto:, tel:, javascript:, data:,
-        # about:, sms:, geo:, ...). The WHATWG URL parser accepts these; the
-        # part after "scheme:" is an opaque path that is serialized verbatim
-        # (scheme lowercased), matching new URL().href. No host/port/dot-segment
-        # normalization applies.
-        return urlunsplit((parts.scheme.lower(), "", parts.path, parts.query, parts.fragment))
-    if parts.username or parts.password:
-        raise ValueError("attribute-canonicalization-failed")
-    hostname = (parts.hostname or "").lower()
-    if not hostname:
-        raise ValueError("attribute-canonicalization-failed")
-    if hostname.isascii():
-        netloc = hostname
-    else:
-        try:
-            netloc = hostname.encode("idna").decode("ascii")
-        except Exception as exc:
-            raise ValueError("attribute-canonicalization-failed") from exc
-    if parts.port is not None:
-        default = (parts.scheme == "http" and parts.port == 80) or (
-            parts.scheme == "https" and parts.port == 443
-        )
-        if not default:
-            netloc = f"{netloc}:{parts.port}"
-    path = _remove_dot_segments(parts.path or "/") or "/"
-    if not path.startswith("/"):
-        path = "/" + path
-    return urlunsplit((parts.scheme.lower(), netloc, path, parts.query, parts.fragment))
+    return str(parsed)
+
+
+def _escape_text(value: str) -> str:
+    """Escape commercial-at signs in text-node records (htmltrust-c14n-v1)."""
+    return value.replace("@", "@@")
 
 
 def _finalize_parts(text: str) -> str:
@@ -224,4 +278,7 @@ def _finalize_parts(text: str) -> str:
     text = text.replace(" \n", "\n").replace("\n ", "\n")
     while "\n\n" in text:
         text = text.replace("\n\n", "\n")
-    return text.strip()
+    text = text.strip()
+    if len(text.encode("utf-8")) > _MAX_OUTPUT_BYTES:
+        raise ValueError("resource-limit-exceeded")
+    return text

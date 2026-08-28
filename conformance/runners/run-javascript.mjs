@@ -2,7 +2,7 @@
 /**
  * JavaScript conformance runner for HTMLTrust canonicalization.
  *
- * Reads every fixture under conformance/fixtures/{normalize,extract,claims}/,
+ * Reads every fixture under conformance/fixtures/{normalize,extract,claims,jcs}/,
  * runs the corresponding binding function, and compares byte-for-byte
  * against the `expected` field. Prints PASS / FAIL / SKIP per fixture and
  * exits non-zero on any divergence.
@@ -12,7 +12,7 @@
  *   node run-javascript.mjs --update  # rewrite the `expected` field from
  *                                     # the current binding output
  *
- * The JS binding covers normalize, extract, and claims fixtures.
+ * The JS binding covers normalize, extract, claims, and strict JCS fixtures.
  */
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -33,11 +33,23 @@ const UPDATE = args.has("--update");
 // and returns the produced output string. Returns `null` if the binding
 // has no implementation for that suite.
 const RUNNERS = {
-  normalize: (fx) => binding.normalizeText(fx.input),
+  normalize: (fx) => binding.normalizeText(expandInput(fx)),
   extract: (fx) =>
-    binding.extractCanonicalText(fx.input, { baseUrl: fx.baseURL ?? null }),
-  claims: (fx) => binding.canonicalizeClaims(fx.input),
+    binding.extractCanonicalText(expandInput(fx), { baseUrl: fx.baseURL ?? null }),
+  claims: (fx) => binding.canonicalizeClaims(expandInput(fx)),
+  jcs: (fx) => binding.canonicalizeJsonDocument(expandInput(fx)),
 };
+
+function expandInput(fx) {
+  if (!fx.repeat) return fx.input;
+  if (typeof fx.input === "string") return fx.input.repeat(fx.repeat);
+  if (fx.input && typeof fx.input === "object" && typeof fx.repeat === "number") {
+    const out = {};
+    for (const [key, value] of Object.entries(fx.input)) out[key] = typeof value === "string" ? value.repeat(fx.repeat) : value;
+    return out;
+  }
+  return fx.input;
+}
 
 /** List fixture files in a suite directory, sorted lexically. */
 function listFixtures(suite) {
@@ -69,7 +81,7 @@ let fail = 0;
 let skip = 0;
 const failures = [];
 
-for (const suite of ["normalize", "extract", "claims"]) {
+for (const suite of ["normalize", "extract", "claims", "jcs"]) {
   const runner = RUNNERS[suite];
   for (const path of listFixtures(suite)) {
     const fixture = readFixture(path);

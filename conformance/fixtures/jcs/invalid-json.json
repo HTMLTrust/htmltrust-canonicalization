@@ -1,0 +1,6 @@
+{
+  "name": "invalid-json",
+  "description": "Non-JSON numeric tokens are rejected.",
+  "input": "{\"n\":NaN}",
+  "error": "jcs-invalid-json"
+}

@@ -20,6 +20,7 @@ import unicodedata
 from typing import Iterable, Union
 
 _RangeOrPoint = Union[int, tuple[int, int]]
+_MAX_RESOURCE_BYTES = 1024 * 1024
 
 
 def _build_class(items: Iterable[_RangeOrPoint]) -> str:
@@ -163,6 +164,8 @@ def normalize_text(text: str, preserve_whitespace: bool = False) -> str:
     """
     if not isinstance(text, str):
         raise TypeError("normalize_text expects a str")
+    if len(text.encode("utf-8")) > _MAX_RESOURCE_BYTES:
+        raise ValueError("resource-limit-exceeded")
 
     # Phase 1: NFKC -- ligatures, fullwidth/halfwidth, presentation forms,
     # superscripts, CJK compatibility, Jamo composition.
@@ -188,5 +191,8 @@ def normalize_text(text: str, preserve_whitespace: bool = False) -> str:
 
     # Phase 5: ellipsis.
     text = _ELLIPSIS_RE.sub("...", text)
+
+    if len(text.encode("utf-8")) > _MAX_RESOURCE_BYTES:
+        raise ValueError("resource-limit-exceeded")
 
     return text

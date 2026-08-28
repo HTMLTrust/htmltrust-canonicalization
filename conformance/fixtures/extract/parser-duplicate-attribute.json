@@ -1,0 +1,6 @@
+{
+  "name": "parser-duplicate-attribute",
+  "description": "Duplicate source attributes are rejected before a repaired DOM is accepted.",
+  "input": "<signed-section><p title=one title=two>Text</p></signed-section>",
+  "error": "parser-profile-unsupported"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "escaped-surrogate-pair",
+  "description": "A valid escaped UTF-16 surrogate pair is decoded to one Unicode scalar value.",
+  "input": "\"\\uD834\\uDD1E\"",
+  "expected": "\"𝄞\""
+}

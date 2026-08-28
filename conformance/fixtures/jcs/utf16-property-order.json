@@ -1,0 +1,6 @@
+{
+  "name": "utf16-property-order",
+  "description": "Object members sort by UTF-16 code units, placing an astral key before a high-BMP key.",
+  "input": "{\"\":1,\"😀\":2}",
+  "expected": "{\"😀\":2,\"\":1}"
+}

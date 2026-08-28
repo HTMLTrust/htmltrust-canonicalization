@@ -1,0 +1,6 @@
+{
+  "name": "url-percent-escapes-preserved",
+  "description": "Existing percent escapes retain their encoded bytes and spelling during WHATWG serialization.",
+  "input": "<p><a href=\"https://example.org/a%2Fb/%7e?q=%2f#%41\">l</a></p>",
+  "expected": "@attr:a:href:https://example.org/a%2Fb/%7e?q=%2f#%41\nl"
+}

@@ -24,11 +24,11 @@ class CanonicalizeClaimsTest extends TestCase
         $this->assertSame("title:\"Hello\"\n", Canonicalize::canonicalizeClaims($claims));
     }
 
-    public function testStringifiesNonStringValues(): void
+    public function testRejectsNonStringValues(): void
     {
-        $claims = ['count' => 42, 'flag' => true];
-        // PHP coerces true to "1", 42 to "42".
-        $this->assertSame("count:42\nflag:1\n", Canonicalize::canonicalizeClaims($claims));
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('claim-malformed');
+        Canonicalize::canonicalizeClaims(['count' => 42]);
     }
 
     public function testEmptyClaimsProducesEmptyString(): void

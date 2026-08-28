@@ -1,0 +1,6 @@
+{
+  "name": "trailing-json",
+  "description": "Trailing tokens after a complete JSON value are rejected.",
+  "input": "{\"a\":1} true",
+  "error": "jcs-invalid-json"
+}

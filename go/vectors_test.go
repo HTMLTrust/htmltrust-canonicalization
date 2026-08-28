@@ -18,10 +18,12 @@ func TestEndToEndVectors(t *testing.T) {
 			PublicKeyPem string `json:"publicKeyPem"`
 		} `json:"key"`
 		Input struct {
-			HTML     string `json:"html"`
-			BaseURL  string `json:"baseURL"`
-			Domain   string `json:"domain"`
-			SignedAt string `json:"signedAt"`
+			HTML        string `json:"html"`
+			BaseURL     string `json:"baseURL"`
+			DocumentURL string `json:"documentURL"`
+			Scope       string `json:"scope"`
+			KeyID       string `json:"keyid"`
+			SignedAt    string `json:"signedAt"`
 		} `json:"input"`
 		Claims           map[string]string `json:"claims"`
 		CanonicalContent string            `json:"canonicalContent"`
@@ -64,7 +66,11 @@ func TestEndToEndVectors(t *testing.T) {
 		if got := sha(claims); got != v.ClaimsHash {
 			t.Errorf("%s: claimsHash got %s want %s", path, got, v.ClaimsHash)
 		}
-		payload, err := BuildSignatureBinding(v.ContentHash, v.ClaimsHash, v.Input.Domain, v.Input.SignedAt)
+		payload, err := BuildSigningPayloadV1(SigningProfileV1Input{
+			ContentHash: v.ContentHash, ClaimsHash: v.ClaimsHash,
+			DocumentURL: v.Input.DocumentURL, Scope: v.Input.Scope,
+			KeyID: v.Input.KeyID, Algorithm: v.Algorithm, SignedAt: v.Input.SignedAt,
+		})
 		if err != nil {
 			t.Fatalf("%s: binding: %v", path, err)
 		}

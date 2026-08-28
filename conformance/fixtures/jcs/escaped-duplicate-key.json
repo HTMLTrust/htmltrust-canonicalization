@@ -1,0 +1,6 @@
+{
+  "name": "escaped-duplicate-key",
+  "description": "Lexically different keys that decode to the same string are duplicates.",
+  "input": "{\"a\":1,\"\\u0061\":2}",
+  "error": "jcs-duplicate-key"
+}

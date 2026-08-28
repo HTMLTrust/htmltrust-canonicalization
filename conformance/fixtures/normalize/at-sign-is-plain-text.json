@@ -1,0 +1,6 @@
+{
+  "name": "at-sign-is-plain-text",
+  "description": "Generic text normalization does not apply the extraction record escape.",
+  "input": "contact@example.com",
+  "expected": "contact@example.com"
+}

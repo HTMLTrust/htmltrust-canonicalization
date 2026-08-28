@@ -1,0 +1,7 @@
+{
+  "name": "resource-input-limit",
+  "description": "A raw JSON document larger than 1 MiB is rejected before parsing.",
+  "input": " ",
+  "repeat": 1048577,
+  "error": "resource-limit-exceeded"
+}

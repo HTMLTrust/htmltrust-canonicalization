@@ -1,0 +1,8 @@
+{
+  "name": "escaping-v1",
+  "description": "Claim names and values escape reverse solidus, colon, and line feed after normalization.",
+  "input": {
+    "claim:Path": "C:\\docs:one"
+  },
+  "expected": "claim\\:Path:C\\:\\\\docs\\:one\n"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "resource-source-limit",
+  "description": "Source input larger than 1 MiB is rejected before parsing.",
+  "input": "a",
+  "repeat": 1048577,
+  "error": "resource-limit-exceeded"
+}

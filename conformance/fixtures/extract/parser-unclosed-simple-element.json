@@ -1,0 +1,6 @@
+{
+  "name": "parser-unclosed-simple-element",
+  "description": "A simple unclosed element is outside the portable parser profile.",
+  "input": "<p>x",
+  "error": "parser-profile-unsupported"
+}

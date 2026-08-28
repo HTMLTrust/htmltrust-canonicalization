@@ -1,68 +1,93 @@
-# HTMLTrust Canonicalization -- Python
+# HTMLTrust Canonicalization for Python
 
-Python binding for the HTMLTrust canonical text normalization library. Produces byte-identical output to the JavaScript, Go, PHP, and Rust implementations for every test vector in the shared conformance suite.
+This package implements the Python binding for `htmltrust-c14n-v1`. It
+normalizes text, extracts signed content from HTML, canonicalizes claims, and
+canonicalizes raw JSON under RFC 8785. The same shared fixtures run against the
+JavaScript, Go, PHP, and Rust bindings.
 
-## Status
+Version: `0.3.0` release candidate
+Python: 3.10 or newer
 
-Implemented. The shared conformance suite passes for normalization, extraction, and claims. `extract_canonical_text` includes the current signed semantic attribute allowlist (`href`, `src`, `alt`, `aria-label`) when a base URL is available for relative URLs.
+## Test a fresh checkout
 
-Out of scope for this package: signature verification and key resolution. Those live in the higher-level HTMLTrust client libraries (and will arrive in a follow-up PR for the Python binding once the JS surface area lands on `main`).
+From the repository root, Docker runs the Python unit tests and every shared
+conformance fixture:
 
-## Scope
-
-This package provides four functions:
-
-1. **`normalize_text(text: str, preserve_whitespace: bool = False) -> str`** -- applies the 8-phase canonicalization defined in [`../spec.md`](../spec.md) to a UTF-8 string. Mirrors the existing JavaScript/Go/PHP signatures.
-2. **`extract_canonical_text(html: str, preserve_whitespace: bool = False, base_url: str | None = None) -> str`** -- parses an HTML fragment with BeautifulSoup, walks the DOM, emits text nodes and signed semantic attributes in document order, and applies `normalize_text` to text/attribute values.
-3. **`canonicalize_claims(claims: Mapping[str, object]) -> str`** -- serializes a claim map to the canonical, hashable string used by the `claims-hash` field of the signature binding (each entry normalized, sorted lexically by name, emitted as `name:content\n`).
-4. **`extract_claims_from_signed_section(html: str) -> dict[str, str]`** -- extracts all direct child `<meta name content>` claims from a `<signed-section>` or signed-section inner fragment, including `author` and `signed-at`, and rejects duplicate normalized names.
-
-All three are pure functions: no network, no file I/O, deterministic output for the same input.
-
-## Dependencies
-
-- `unicodedata` (stdlib) for NFKC normalization
-- `beautifulsoup4 >= 4.12` for HTML parsing in `extract_canonical_text`
-- No other runtime dependencies
-
-## Conformance
-
-`tests/test_normalize.py` runs all 18 normalization vectors from `javascript/test.js`. `tests/test_extract.py` and `tests/test_claims.py` cover the HTML extraction and claim canonicalization contracts. Output MUST stay byte-identical to the JavaScript / Go / PHP / Rust bindings.
-
-## Installation
-
-```bash
-pip install htmltrust-canonicalization
-# or for development:
-cd python && pip install -e '.[dev]'
+```sh
+docker compose -f compose.test.yml run --rm python
 ```
 
-## Usage
+Run `./scripts/test-in-docker.sh` to test all five language bindings.
+
+## Install
+
+Install the package from this checkout:
+
+```sh
+python3 -m pip install -e 'python[dev]'
+```
+
+For Python-only development from this directory:
+
+```sh
+python3 -m pip install -e '.[dev]'
+python3 -m pytest -q
+```
+
+Runtime dependency versions are pinned in `pyproject.toml` because parser and
+serializer behavior affects signed bytes.
+
+## Public API
+
+- `normalize_text(text, preserve_whitespace=False)` applies the Unicode and
+  punctuation normalization profile.
+- `extract_canonical_text(html, preserve_whitespace=False, base_url=None)`
+  parses HTML and emits signed text plus semantic attribute records.
+- `canonicalize_claims(claims)` emits the sorted and escaped claims byte
+  sequence.
+- `extract_claims_from_signed_section(html)` reads direct-child claim metadata.
+- `canonicalize_json_document(document)` validates and canonicalizes one raw
+  JSON document with duplicate-key detection and IEEE 754 number handling.
+
+Each entry point is deterministic and performs no network or file I/O. Text,
+HTML, and JSON inputs are limited to 1 MiB. A limit breach raises
+`ValueError("resource-limit-exceeded")`.
+
+## Example
 
 ```python
 from htmltrust_canonicalization import (
-    normalize_text,
-    extract_canonical_text,
     canonicalize_claims,
-    extract_claims_from_signed_section,
+    canonicalize_json_document,
+    extract_canonical_text,
+    normalize_text,
 )
 
 canonical = normalize_text('He said, "Hello…"')
-# -> 'He said, "Hello..."'
+assert canonical == 'He said, "Hello..."'
 
-from_html = extract_canonical_text('<p>Hello <em>world</em>!</p>')
-# -> 'Hello world!'
+content = extract_canonical_text(
+    '<p>Read <a href="/paper">the paper</a>.</p>',
+    base_url='https://example.org/article',
+)
 
-claims_str = canonicalize_claims({
-    'License': 'CC-BY-4.0',
-    'AIAssistance': 'None',
-})
-# -> 'AIAssistance:None\nLicense:CC-BY-4.0\n'
+claims = canonicalize_claims({'License': 'CC-BY-4.0'})
+assert claims == 'License:CC-BY-4.0\n'
+
+payload = canonicalize_json_document('{"z":-0,"a":1e30}')
+assert payload == '{"a":1e+30,"z":0}'
 ```
 
-## Tests
+Relative `href` and `src` attributes require `base_url`. The v1 safe-URL
+profile accepts HTTPS URLs and rejects credentials, control characters, and
+unsupported schemes.
 
-```bash
-pip install -e '.[dev]'
-pytest
-```
+## Package scope
+
+Signature verification and key resolution live in the HTMLTrust client and
+server packages. This binding produces the canonical byte sequences those
+packages hash and sign.
+
+The normative protocol text is maintained in the
+[HTMLTrust specification](https://github.com/HTMLTrust/htmltrust-spec/tree/main/ietf-draft).
+The repository's shared fixtures are the executable cross-language contract.

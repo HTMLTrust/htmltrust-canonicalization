@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "htmltrust-canonicalization"
-version = "0.1.0"
+version = "0.3.0"
 description = "Canonical text normalization and HTML extraction for HTMLTrust signed content. Byte-identical output to the JavaScript, Go, PHP, and Rust bindings."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,12 +24,16 @@ classifiers = [
     "Topic :: Security :: Cryptography",
 ]
 dependencies = [
-    "beautifulsoup4>=4.12",
+    "beautifulsoup4==4.15.0",
+    "html5lib==1.1",
+    "pywhatwgurl==0.1.2",
+    "rfc8785==0.1.4",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
+    "cryptography==50.0.1",
+    "pytest==9.1.1",
 ]
 
 [project.urls]

@@ -1,0 +1,6 @@
+{
+  "name": "numeric-property-names",
+  "description": "Numeric-looking member names remain object properties and sort as strings.",
+  "input": "{\"1\":\"one\",\"0\":\"zero\"}",
+  "expected": "{\"0\":\"zero\",\"1\":\"one\"}"
+}

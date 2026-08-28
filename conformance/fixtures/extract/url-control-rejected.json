@@ -1,0 +1,6 @@
+{
+  "name": "url-control-rejected",
+  "description": "A control produced by character-reference decoding is rejected before URL parsing.",
+  "input": "<p><a href=\"https://example.org/line&#10;break\">x</a></p>",
+  "error": "url-policy-violation"
+}

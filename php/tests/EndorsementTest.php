@@ -101,6 +101,91 @@ class EndorsementTest extends TestCase
         ], [$resolver]));
     }
 
+    public function testEndorsementBindingPreservesUnicodeExtensions(): void
+    {
+        $binding = Signature::canonicalizeEndorsementDocument([
+            'endorser' => 'did:web:例.example',
+            'endorsement' => 'sha256:内容😀',
+            'timestamp' => '2025-05-01T00:00Z',
+            'algorithm' => 'ed25519',
+            'extension😀' => ['説明' => 'café', 'value' => "\u{1F469}\u{200D}\u{1F4BB}"],
+            'signature' => 'omitted',
+        ]);
+
+        $this->assertStringContainsString('例.example', $binding);
+        $this->assertStringContainsString('内容😀', $binding);
+        $this->assertStringContainsString('extension😀', $binding);
+        $this->assertStringContainsString('説明', $binding);
+        $this->assertStringNotContainsString('omitted', $binding);
+    }
+
+    public function testRawEndorsementBindingRejectsDuplicateMembers(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('jcs-duplicate-key');
+        Signature::canonicalizeEndorsementDocument(
+            '{"endorser":"alice","endorsement":"sha256:X","algorithm":"ed25519",'
+            . '"timestamp":"2025-05-01T00:00Z","endorsement":"sha256:Y"}'
+        );
+    }
+
+    public function testVerifyEndorsementRejectsRevokedResolvedKey(): void
+    {
+        $this->skipIfNoSodium();
+        [$endorser, $pem, $secret] = $this->makeEndorser();
+        $unsigned = [
+            'endorser' => $endorser,
+            'endorsement' => 'sha256:CONTENT',
+            'timestamp' => '2025-05-01T00:00Z',
+            'algorithm' => 'ed25519',
+        ];
+        $unsigned['signature'] = rtrim(base64_encode(
+            sodium_crypto_sign_detached(Signature::canonicalizeEndorsementDocument($unsigned), $secret)
+        ), '=');
+
+        $resolver = new InMemoryResolver([
+            $endorser => new ResolvedKey($pem, 'ed25519', $endorser, true),
+        ]);
+        $this->assertFalse(Signature::verifyEndorsement($unsigned, [$resolver]));
+    }
+
+    public function testVerifyEndorsementFailsClosedOnExpiryAndRevokedBy(): void
+    {
+        $this->skipIfNoSodium();
+        [$endorser, $pem, $secret] = $this->makeEndorser();
+        $resolver = new InMemoryResolver([$endorser => new ResolvedKey($pem, 'ed25519', $endorser)]);
+        $sign = static function (array $unsigned) use ($secret): array {
+            $unsigned['signature'] = rtrim(base64_encode(
+                sodium_crypto_sign_detached(Signature::canonicalizeEndorsementDocument($unsigned), $secret)
+            ), '=');
+            return $unsigned;
+        };
+        $base = [
+            'endorser' => $endorser,
+            'endorsement' => 'sha256:LIFECYCLE',
+            'timestamp' => '2025-05-01T00:00:00Z',
+            'algorithm' => 'ed25519',
+        ];
+
+        $this->assertTrue(Signature::verifyEndorsement(
+            $sign($base + ['expires' => '2999-01-01T00:00:00Z']), [$resolver]
+        ));
+        foreach ([
+            ['expires' => 'nonsense'],
+            ['expires' => '2000-01-01T00:00:00Z'],
+            ['expires' => '2999-01-01T00:00:00+00:00'],
+            ['expires' => ''],
+            ['revokedBy' => ''],
+            ['revokedBy' => 'did:web:authority.example'],
+            ['revokedBy' => 42],
+        ] as $lifecycle) {
+            $this->assertFalse(
+                Signature::verifyEndorsement($sign($base + $lifecycle), [$resolver]),
+                'malformed or revoked lifecycle field must fail closed'
+            );
+        }
+    }
+
     // ------------------------------------------------------------------
 
     private function skipIfNoSodium(): void

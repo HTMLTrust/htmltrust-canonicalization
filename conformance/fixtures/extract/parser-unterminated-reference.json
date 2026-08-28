@@ -1,0 +1,6 @@
+{
+  "name": "parser-unterminated-reference",
+  "description": "Legacy unterminated character references are outside the portable parser profile.",
+  "input": "<signed-section><p>A &amp B</p></signed-section>",
+  "error": "parser-profile-unsupported"
+}

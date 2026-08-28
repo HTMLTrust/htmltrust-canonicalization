@@ -17,7 +17,7 @@ class CanonicalizeTest extends TestCase
      *
      * @return array
      */
-    public function specTestPairsProvider(): array
+    public static function specTestPairsProvider(): array
     {
         return [
             'Curly double quotes → straight' => [
@@ -112,5 +112,53 @@ class CanonicalizeTest extends TestCase
         $result = Canonicalize::normalizeText("a   b\n\tc", true);
         // Whitespace should NOT be collapsed, but other normalizations apply
         $this->assertStringContainsString('   ', $result);
+    }
+
+    /** @dataProvider malformedFragmentProvider */
+    public function testRejectsParserAmbiguities(string $html, string $reason): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage($reason);
+        Canonicalize::extractCanonicalText($html);
+    }
+
+    public static function malformedFragmentProvider(): array
+    {
+        return [
+            'standalone foreignObject' => ['<foreignObject>text</foreignObject>', 'parser-profile-unsupported'],
+            'unterminated named reference' => ['<p>&amp!</p>', 'parser-profile-unsupported'],
+            'unterminated numeric reference' => ['<p>&#65!</p>', 'parser-profile-unsupported'],
+            'unterminated comment' => ['<p><!-- comment</p>', 'parser-profile-unsupported'],
+            'table comment foster parenting' => ['<table><!-- comment --><tr><td>x</td></tr></table>', 'parser-profile-unsupported'],
+            'table tail foster parenting' => ['<table><tr><td>x</td></tr>tail</table>', 'parser-profile-unsupported'],
+        ];
+    }
+
+    public function testIframeRawTextDoesNotTriggerReferenceAmbiguity(): void
+    {
+        $this->assertSame("before\nafter", Canonicalize::extractCanonicalText(
+            '<p>before</p><iframe>&amp!</iframe><p>after</p>'
+        ));
+    }
+
+    public function testRejectsElementNestingBeyondLimit(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('resource-limit-exceeded');
+        Canonicalize::extractCanonicalText(str_repeat('<div>', 257) . 'x' . str_repeat('</div>', 257));
+    }
+
+    public function testColonQualifiedElementsCountTowardNestingLimit(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('resource-limit-exceeded');
+        Canonicalize::extractCanonicalText(str_repeat('<x:y>', 257) . 'x' . str_repeat('</x:y>', 257));
+    }
+
+    public function testInvalidBaseUrlIsRejectedWithoutUrlAttributes(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('attribute-canonicalization-failed');
+        Canonicalize::extractCanonicalText('<p>text</p>', false, 'not a URL');
     }
 }

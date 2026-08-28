@@ -62,6 +62,19 @@ class TrustDirectoryResolverTest extends TestCase
         $this->assertNull($resolver->resolve('abc123'));
     }
 
+    public function testRejectsOversizedInjectedResponse(): void
+    {
+        $resolver = new TrustDirectoryResolver(
+            ['https://dir.example'],
+            static function (string $url): ?array {
+                return ['body' => str_repeat('x', 64 * 1024 + 1), 'contentType' => 'application/json'];
+            }
+        );
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('resource-limit-exceeded');
+        $resolver->resolve('abc123');
+    }
+
     public function testUrlEncodesKeyid(): void
     {
         $captured = ['url' => null];

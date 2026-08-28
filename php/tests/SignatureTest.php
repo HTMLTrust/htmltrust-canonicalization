@@ -52,7 +52,7 @@ class SignatureTest extends TestCase
         Signature::buildSignatureBinding($contentHash, $claimsHash, $domain, $signedAt);
     }
 
-    public function emptyFieldProvider(): array
+    public static function emptyFieldProvider(): array
     {
         return [
             'empty contentHash' => ['', 'b', 'https://example.com', 'd'],
@@ -60,6 +60,60 @@ class SignatureTest extends TestCase
             'empty domain'      => ['a', 'b', '', 'd'],
             'empty signedAt'    => ['a', 'b', 'https://example.com', ''],
         ];
+    }
+
+    // ------------------------------------------------------------------
+    // htmltrust-signature-v1
+    // ------------------------------------------------------------------
+
+    public function testDeriveSigningLocationV1UsesWhatwgSerialization(): void
+    {
+        $this->assertSame(
+            'https://xn--bcher-kva.example/article?q=1',
+            Signature::deriveSigningLocationV1('HTTPS://BÜCHER.EXAMPLE:443/a/../article?q=1#part', 'url')
+        );
+        $this->assertSame(
+            'https://example.org:8443',
+            Signature::deriveSigningLocationV1('https://example.org:8443/a?q=1#part', 'origin')
+        );
+    }
+
+    public function testValidateSignedAtV1RejectsNonexistentDate(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Signature::validateSignedAtV1('2026-02-30T12:00:00Z');
+    }
+
+    public function testBuildSigningPayloadV1ReproducesFrozenVector(): void
+    {
+        $path = dirname(__DIR__, 2) . '/conformance/vectors/vector-01.json';
+        $vector = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(
+            $vector['signingPayload'],
+            Signature::buildSigningPayloadV1([
+                'contentHash' => $vector['contentHash'],
+                'claimsHash' => $vector['claimsHash'],
+                'documentURL' => $vector['input']['documentURL'],
+                'scope' => $vector['input']['scope'],
+                'keyid' => $vector['input']['keyid'],
+                'algorithm' => $vector['algorithm'],
+                'signedAt' => $vector['input']['signedAt'],
+            ])
+        );
+    }
+
+    public function testBuildSigningPayloadV1RejectsWhitespacePaddedField(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Signature::buildSigningPayloadV1([
+            'contentHash' => ' sha256:ABC',
+            'claimsHash' => 'sha256:DEF',
+            'documentURL' => 'https://example.com/',
+            'scope' => 'url',
+            'keyid' => 'https://keys.example/alice.json',
+            'algorithm' => 'ed25519',
+            'signedAt' => '2026-01-15T12:00:00Z',
+        ]);
     }
 
     // ------------------------------------------------------------------
@@ -100,8 +154,8 @@ class SignatureTest extends TestCase
             $privateUse => 2,
             $astral => 1,
         ]);
-        $astralEncoded = trim((string) json_encode($astral), '"');
-        $privateUseEncoded = trim((string) json_encode($privateUse), '"');
+        $astralEncoded = trim((string) json_encode($astral, JSON_UNESCAPED_UNICODE), '"');
+        $privateUseEncoded = trim((string) json_encode($privateUse, JSON_UNESCAPED_UNICODE), '"');
         $this->assertLessThan(strpos($binding, $privateUseEncoded), strpos($binding, $astralEncoded));
     }
 

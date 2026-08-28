@@ -1,0 +1,7 @@
+{
+  "name": "resource-source-limit",
+  "description": "The v1 normalization API rejects UTF-8 input larger than 1 MiB.",
+  "input": "a",
+  "repeat": 1048577,
+  "error": "resource-limit-exceeded"
+}

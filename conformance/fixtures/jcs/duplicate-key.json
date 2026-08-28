@@ -1,0 +1,6 @@
+{
+  "name": "duplicate-key",
+  "description": "Duplicate object member names are rejected before materialization.",
+  "input": "{\"a\":1,\"a\":2}",
+  "error": "jcs-duplicate-key"
+}

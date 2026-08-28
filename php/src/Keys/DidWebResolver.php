@@ -41,13 +41,16 @@ final class DidWebResolver implements KeyResolver
             return null;
         }
 
-        $response = ($this->fetcher)($url);
+        $response = HttpFetcher::validateResponse(($this->fetcher)($url));
         if ($response === null) {
             return null;
         }
 
         $doc = json_decode($response['body'], true);
         if (!is_array($doc)) {
+            return null;
+        }
+        if (($doc['deactivated'] ?? false) === true) {
             return null;
         }
 
@@ -66,7 +69,20 @@ final class DidWebResolver implements KeyResolver
             }
 
             $algorithm = self::guessAlgorithm($method);
-            return new ResolvedKey($pem, $algorithm, $keyid);
+            $revoked = isset($method['revoked']) && is_bool($method['revoked'])
+                ? $method['revoked']
+                : false;
+            $expires = isset($method['expires']) && is_string($method['expires']) && $method['expires'] !== ''
+                ? $method['expires']
+                : null;
+            $resolved = new ResolvedKey($pem, $algorithm, $keyid, $revoked, $expires);
+            // Expired, malformed-expiry, or explicitly revoked verification
+            // methods are resolution failures. Continue so a later live
+            // method can still satisfy the DID lookup, matching JS.
+            if ($resolved->isRevoked()) {
+                continue;
+            }
+            return $resolved;
         }
 
         return null;
@@ -87,9 +103,9 @@ final class DidWebResolver implements KeyResolver
 
         // Strip any fragment (e.g. did:web:example.com#keys-1) — the fragment
         // identifies a verificationMethod, but the document URL is the same.
-        $hash = strpos($rest, '#');
-        if ($hash !== false) {
-            $rest = substr($rest, 0, $hash);
+        $suffix = strcspn($rest, '/?#');
+        if ($suffix < strlen($rest)) {
+            $rest = substr($rest, 0, $suffix);
         }
 
         $parts = explode(':', $rest);
@@ -97,14 +113,57 @@ final class DidWebResolver implements KeyResolver
         if ($domain === null || $domain === '') {
             return null;
         }
-        // did:web percent-encodes ports as %3A; decode for URL building.
-        $domain = rawurldecode($domain);
+        // did:web percent-encodes only the authority's port colon.
+        $domain = str_ireplace('%3A', ':', $domain);
+        if (str_contains($domain, '%')) {
+            return null;
+        }
+        try {
+            $authorityUrl = \Uri\WhatWg\Url::parse('https://' . $domain);
+        } catch (\Throwable $error) {
+            return null;
+        }
+        if ($authorityUrl === null
+            || strtolower($authorityUrl->getScheme()) !== 'https'
+            || $authorityUrl->getAsciiHost() === null
+            || $authorityUrl->getAsciiHost() === ''
+            || $authorityUrl->getUsername() !== null
+            || $authorityUrl->getPassword() !== null
+            || $authorityUrl->getPath() !== '/'
+            || $authorityUrl->getQuery() !== null
+            || $authorityUrl->getFragment() !== null) {
+            return null;
+        }
+        $domain = $authorityUrl->getAsciiHost();
+        if ($authorityUrl->getPort() !== null) {
+            $domain .= ':' . $authorityUrl->getPort();
+        }
 
         if (count($parts) === 0) {
             return 'https://' . $domain . '/.well-known/did.json';
         }
-        $path = implode('/', array_map('rawurldecode', $parts));
+        $encodedParts = [];
+        foreach ($parts as $part) {
+            $encoded = self::encodePathPart($part);
+            if ($encoded === null) {
+                return null;
+            }
+            $encodedParts[] = $encoded;
+        }
+        $path = implode('/', $encodedParts);
         return 'https://' . $domain . '/' . $path . '/did.json';
+    }
+
+    private static function encodePathPart(string $part): ?string
+    {
+        if ($part === '' || preg_match('/%(?![0-9A-Fa-f]{2})/', $part) === 1) {
+            return null;
+        }
+        return preg_replace_callback(
+            '/%25([0-9A-Fa-f]{2})/',
+            static fn (array $match): string => '%' . $match[1],
+            rawurlencode($part)
+        );
     }
 
     /**

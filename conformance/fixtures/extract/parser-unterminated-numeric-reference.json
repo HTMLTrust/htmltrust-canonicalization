@@ -1,0 +1,6 @@
+{
+  "name": "parser-unterminated-numeric-reference",
+  "description": "The v1 parser profile rejects numeric character references without a semicolon.",
+  "input": "<p>&#65</p>",
+  "error": "parser-profile-unsupported"
+}

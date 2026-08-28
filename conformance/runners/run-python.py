@@ -35,25 +35,50 @@ from htmltrust_canonicalization import (  # noqa: E402
     canonicalize_claims,
     extract_canonical_text,
     normalize_text,
+    canonicalize_json_document,
 )
 
 
+def expand_input(fixture: dict):
+    """Apply fixture repeat semantics shared with the JavaScript runner."""
+    value = fixture["input"]
+    repeat = fixture.get("repeat")
+    if not repeat:
+        return value
+    if isinstance(value, str):
+        return value * int(repeat)
+    # JavaScript's typeof number excludes booleans, even though bool is an
+    # int subclass in Python.
+    if isinstance(value, dict) and isinstance(repeat, (int, float)) and not isinstance(repeat, bool):
+        count = int(repeat)
+        return {
+            key: item * count if isinstance(item, str) else item
+            for key, item in value.items()
+        }
+    return value
+
+
 def run_normalize(fixture: dict) -> str:
-    return normalize_text(fixture["input"])
+    return normalize_text(expand_input(fixture))
 
 
 def run_extract(fixture: dict) -> str:
-    return extract_canonical_text(fixture["input"], base_url=fixture.get("baseURL"))
+    return extract_canonical_text(expand_input(fixture), base_url=fixture.get("baseURL"))
 
 
 def run_claims(fixture: dict) -> str:
-    return canonicalize_claims(fixture["input"])
+    return canonicalize_claims(expand_input(fixture))
+
+
+def run_jcs(fixture: dict) -> str:
+    return canonicalize_json_document(expand_input(fixture))
 
 
 RUNNERS = {
     "normalize": run_normalize,
     "extract": run_extract,
     "claims": run_claims,
+    "jcs": run_jcs,
 }
 
 
@@ -91,7 +116,7 @@ def main() -> int:
     skipped = 0
     failures: list[str] = []
 
-    for suite in ("normalize", "extract", "claims"):
+    for suite in ("normalize", "extract", "claims", "jcs"):
         runner = RUNNERS[suite]
         for path in list_fixtures(suite):
             fixture = load(path)

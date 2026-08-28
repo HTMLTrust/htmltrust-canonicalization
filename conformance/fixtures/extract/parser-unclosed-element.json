@@ -1,0 +1,6 @@
+{
+  "name": "parser-unclosed-element",
+  "description": "An unclosed non-void element is outside the portable parser profile.",
+  "input": "<signed-section><p>Text</signed-section>",
+  "error": "parser-profile-unsupported"
+}

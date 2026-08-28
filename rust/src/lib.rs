@@ -15,10 +15,19 @@
 
 use std::collections::BTreeMap;
 
-use scraper::{node::Node, Html};
 use ego_tree::NodeRef;
+use scraper::{node::Node, Html};
+use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::ser::{Serialize, Serializer};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
+
+/// Maximum size of a source document and its canonical output.
+pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
+const MAX_ELEMENT_DEPTH: usize = 256;
+const INVALID_UTF8: &str = "invalid-utf8";
+const PARSER_UNSUPPORTED: &str = "parser-profile-unsupported";
+const RESOURCE_LIMIT: &str = "resource-limit-exceeded";
 
 // ---------------------------------------------------------------------------
 // Codepoint ranges, mirroring the JS reference regex character classes
@@ -147,7 +156,10 @@ pub fn normalize_text(text: &str, preserve_whitespace: bool) -> String {
     let nfkc: String = text.nfkc().collect();
 
     // Phases 6 + 7: strip invisible / formatting / bidi characters.
-    let stripped: String = nfkc.chars().filter(|&c| !in_ranges(c, STRIP_RANGES)).collect();
+    let stripped: String = nfkc
+        .chars()
+        .filter(|&c| !in_ranges(c, STRIP_RANGES))
+        .collect();
 
     // Phase 2: whitespace normalization.
     let ws: String = if preserve_whitespace {
@@ -187,6 +199,31 @@ pub fn normalize_text(text: &str, preserve_whitespace: bool) -> String {
     out
 }
 
+/// Fallible byte-oriented normalization entry point for profile-v1 callers.
+///
+/// The source and normalized UTF-8 output are each limited to
+/// [`MAX_DOCUMENT_BYTES`]. The legacy [`normalize_text`] wrapper remains
+/// available for callers that already enforce their own limits.
+pub fn try_normalize_text(text: &str, preserve_whitespace: bool) -> Result<String, String> {
+    if text.len() > MAX_DOCUMENT_BYTES {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    let result = normalize_text(text, preserve_whitespace);
+    if result.len() > MAX_DOCUMENT_BYTES {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    Ok(result)
+}
+
+/// Fallible byte-oriented normalization entry point for profile-v1 callers.
+pub fn try_normalize_text_v1(text: &[u8], preserve_whitespace: bool) -> Result<String, String> {
+    if text.len() > MAX_DOCUMENT_BYTES {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    let text = std::str::from_utf8(text).map_err(|_| INVALID_UTF8.to_string())?;
+    try_normalize_text(text, preserve_whitespace)
+}
+
 /// Extract canonical text from an HTML fragment.
 ///
 /// Implements the HTML -> canonical text extraction defined in spec §2.1
@@ -196,20 +233,48 @@ pub fn normalize_text(text: &str, preserve_whitespace: bool) -> String {
 /// # Arguments
 ///
 /// * `html` -- HTML fragment to canonicalize.
+/// * `options` -- extraction options, including `preserve_whitespace` and an
+///   optional HTTPS base URL for relative signed attributes.
 ///
 /// # Returns
 ///
 /// Canonical text, ready to be hashed. Trimmed of leading/trailing
 /// whitespace.
 pub fn extract_canonical_text(html: &str) -> String {
-    extract_canonical_text_with_base_url(html, None)
+    extract_canonical_text_with_options(html, ExtractOptions::default())
 }
 
 /// Extract canonical text from an HTML fragment, resolving relative signed
 /// semantic URL attributes against `base_url` when supplied.
 pub fn extract_canonical_text_with_base_url(html: &str, base_url: Option<&str>) -> String {
-    try_extract_canonical_text_with_base_url(html, base_url)
+    extract_canonical_text_with_options(
+        html,
+        ExtractOptions {
+            base_url,
+            ..ExtractOptions::default()
+        },
+    )
+}
+
+/// Extraction options. `preserve_whitespace` is passed to text-node
+/// normalization, matching the JavaScript `preserveWhitespace` option.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExtractOptions<'a> {
+    pub preserve_whitespace: bool,
+    pub base_url: Option<&'a str>,
+}
+
+/// Extract canonical text with explicit options.
+pub fn extract_canonical_text_with_options(html: &str, options: ExtractOptions<'_>) -> String {
+    try_extract_canonical_text_with_options(html, options)
         .expect("attribute-canonicalization-failed")
+}
+
+/// Fallible extraction entry point with explicit options. Source HTML, base
+/// URL, and canonical output are each limited to
+/// [`MAX_DOCUMENT_BYTES`].
+pub fn try_extract_canonical_text(html: &str) -> Result<String, String> {
+    try_extract_canonical_text_with_options(html, ExtractOptions::default())
 }
 
 /// Fallible form of [`extract_canonical_text_with_base_url`].
@@ -217,16 +282,323 @@ pub fn try_extract_canonical_text_with_base_url(
     html: &str,
     base_url: Option<&str>,
 ) -> Result<String, String> {
+    try_extract_canonical_text_with_options(
+        html,
+        ExtractOptions {
+            base_url,
+            ..ExtractOptions::default()
+        },
+    )
+}
+
+/// Fallible extraction entry point with explicit options.
+pub fn try_extract_canonical_text_with_options(
+    html: &str,
+    options: ExtractOptions<'_>,
+) -> Result<String, String> {
+    if html.len() > MAX_DOCUMENT_BYTES {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    preflight_source(html)?;
     let document = Html::parse_fragment(html);
-    let base = match base_url {
-        Some(raw) => Some(Url::parse(raw).map_err(|_| "attribute-canonicalization-failed".to_string())?),
+    // html5ever deliberately repairs malformed HTML. The portable profile
+    // cannot sign a repaired tree, so every diagnostic is a hard failure.
+    if !document.errors.is_empty() {
+        return Err(PARSER_UNSUPPORTED.to_string());
+    }
+    let base = match options.base_url {
+        Some(raw) => {
+            if raw.len() > MAX_DOCUMENT_BYTES {
+                return Err(RESOURCE_LIMIT.to_string());
+            }
+            let parsed =
+                Url::parse(raw).map_err(|_| "attribute-canonicalization-failed".to_string())?;
+            if parsed.scheme() != "https"
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+            {
+                return Err("url-policy-violation".to_string());
+            }
+            Some(parsed)
+        }
         None => None,
     };
 
     let mut out = String::new();
-    walk(document.tree.root(), &mut out, base.as_ref())?;
+    walk(
+        document.tree.root(),
+        &mut out,
+        base.as_ref(),
+        options.preserve_whitespace,
+    )?;
 
-    Ok(finalize_parts(&out))
+    if out.len() > MAX_DOCUMENT_BYTES {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    let result = finalize_parts(&out, options.preserve_whitespace);
+    if result.len() > MAX_DOCUMENT_BYTES {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    Ok(result)
+}
+
+/// Fallible, profile-v1 entry point accepting raw UTF-8 bytes. No lossy
+/// decoding is performed, which makes the API suitable for FFI callers.
+pub fn try_extract_canonical_text_v1(
+    html: &[u8],
+    base_url: Option<&[u8]>,
+) -> Result<String, String> {
+    if html.len() > MAX_DOCUMENT_BYTES {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    if base_url.is_some_and(|base| base.len() > MAX_DOCUMENT_BYTES) {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    let html = std::str::from_utf8(html).map_err(|_| INVALID_UTF8.to_string())?;
+    let base = match base_url {
+        Some(bytes) => Some(std::str::from_utf8(bytes).map_err(|_| INVALID_UTF8.to_string())?),
+        None => None,
+    };
+    try_extract_canonical_text_with_base_url(html, base)
+}
+
+/// Alias emphasizing that the input is a byte string.
+pub fn try_extract_canonical_text_bytes(
+    html: &[u8],
+    base_url: Option<&[u8]>,
+) -> Result<String, String> {
+    try_extract_canonical_text_v1(html, base_url)
+}
+
+/// Extract claim metadata from direct child `meta` elements of the first
+/// signed section. Without a wrapper, the fragment is treated as section
+/// inner HTML and parser-created html/head/body nodes are ignored.
+pub fn extract_claims_from_signed_section(html: &str) -> Result<BTreeMap<String, String>, String> {
+    if html.len() > MAX_DOCUMENT_BYTES {
+        return Err("resource-limit-exceeded".to_string());
+    }
+    preflight_source(html)?;
+    let document = Html::parse_fragment(html);
+    if !document.errors.is_empty() {
+        return Err(PARSER_UNSUPPORTED.to_string());
+    }
+    let root = document.tree.root();
+    let section = root.descendants().find(
+        |node| matches!(node.value(), Node::Element(element) if element.name() == "signed-section"),
+    );
+    let candidates: Vec<_> = match section {
+        Some(node) => node.children().collect(),
+        None => root
+            .descendants()
+            .filter(|node| {
+                if !matches!(node.value(), Node::Element(element) if element.name() == "meta") {
+                    return false;
+                }
+                let mut parent = node.parent();
+                while let Some(ancestor) = parent {
+                    match ancestor.value() {
+                        Node::Document | Node::Fragment => return true,
+                        Node::Element(element)
+                            if matches!(element.name(), "html" | "head" | "body") => {}
+                        _ => return false,
+                    }
+                    parent = ancestor.parent();
+                }
+                true
+            })
+            .collect(),
+    };
+    let mut claims = BTreeMap::new();
+    for node in candidates {
+        let Node::Element(element) = node.value() else {
+            continue;
+        };
+        if element.name() != "meta" {
+            continue;
+        }
+        let raw_name = element
+            .attr("name")
+            .ok_or_else(|| "claim-malformed".to_string())?;
+        let raw_content = element
+            .attr("content")
+            .ok_or_else(|| "claim-malformed".to_string())?;
+        if claims.len() >= 64 {
+            return Err("resource-limit-exceeded".to_string());
+        }
+        let name = normalize_text(raw_name, false).trim().to_string();
+        let content = normalize_text(raw_content, false).trim().to_string();
+        if name.is_empty() {
+            return Err("claim-malformed".to_string());
+        }
+        if name.len() > 4096 || content.len() > 4096 {
+            return Err("resource-limit-exceeded".to_string());
+        }
+        if claims.insert(name, content).is_some() {
+            return Err("claim-duplicate".to_string());
+        }
+    }
+    Ok(claims)
+}
+
+fn preflight_source(html: &str) -> Result<(), String> {
+    let lower = html.to_ascii_lowercase();
+    // A small source-level stack catches EOF-implied closes and lets us reject
+    // malformed nesting before html5ever has a chance to repair it. It is
+    // intentionally conservative: all non-void starts require an explicit
+    // matching end tag in the signed profile.
+    const VOID: &[&str] = &[
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr",
+    ];
+    let bytes = html.as_bytes();
+    let mut stack: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let raw_close = stack.last().and_then(|name| {
+            matches!(
+                name.as_str(),
+                "script" | "style" | "iframe" | "xmp" | "noembed"
+            )
+            .then(|| format!("</{name}"))
+        });
+        if let Some(needle) = raw_close {
+            if !lower[i..].starts_with(&needle) {
+                let offset = lower[i..]
+                    .find(&needle)
+                    .ok_or_else(|| PARSER_UNSUPPORTED.to_string())?;
+                i += offset;
+            }
+        }
+        if bytes[i] != b'<' {
+            if bytes[i] == b'&' {
+                if let Some(end) = reference_end(bytes, i + 1) {
+                    let candidate = &html[i..end];
+                    if !candidate.ends_with(';') {
+                        return Err(PARSER_UNSUPPORTED.to_string());
+                    }
+                    // html5ever accepts some ambiguous legacy references and
+                    // partially consumes them. Verify that it recognizes the
+                    // entire reference, rather than relying on that repair.
+                    if !recognized_reference(candidate) {
+                        return Err(PARSER_UNSUPPORTED.to_string());
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        if bytes.get(i..i + 4) == Some(b"<!--") {
+            let Some(end) = html[i + 4..].find("-->") else {
+                return Err(PARSER_UNSUPPORTED.to_string());
+            };
+            let comment = &html[i + 4..i + 4 + end];
+            if comment.contains("--") || comment.ends_with('-') {
+                return Err(PARSER_UNSUPPORTED.to_string());
+            }
+            i += end + 7;
+            continue;
+        }
+        let mut j = i + 1;
+        if j >= bytes.len() {
+            return Err(PARSER_UNSUPPORTED.to_string());
+        }
+        let closing = bytes[j] == b'/';
+        if closing {
+            j += 1;
+        }
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let name_start = j;
+        while j < bytes.len()
+            && !bytes[j].is_ascii_whitespace()
+            && bytes[j] != b'/'
+            && bytes[j] != b'>'
+        {
+            j += 1;
+        }
+        if j == name_start {
+            // declarations and processing instructions are left to html5ever;
+            // malformed ones will produce a parser diagnostic.
+            i += 1;
+            continue;
+        }
+        let name = html[name_start..j].to_ascii_lowercase();
+        if !closing && matches!(name.as_str(), "svg" | "math" | "foreignobject") {
+            return Err(PARSER_UNSUPPORTED.to_string());
+        }
+        let mut quote = 0u8;
+        let mut end = j;
+        while end < bytes.len() {
+            match (quote, bytes[end]) {
+                (0, b'\'' | b'"') => quote = bytes[end],
+                (q, c) if q == c => quote = 0,
+                (0, b'>') => break,
+                _ => {}
+            }
+            end += 1;
+        }
+        if end == bytes.len() {
+            return Err(PARSER_UNSUPPORTED.to_string());
+        }
+        if closing {
+            if stack.pop().as_deref() != Some(name.as_str()) {
+                return Err(PARSER_UNSUPPORTED.to_string());
+            }
+        } else if !VOID.contains(&name.as_str()) && !html[i..=end].ends_with("/>") {
+            if stack.len() >= MAX_ELEMENT_DEPTH {
+                return Err(RESOURCE_LIMIT.to_string());
+            }
+            stack.push(name);
+        }
+        i = end + 1;
+    }
+    if !stack.is_empty() {
+        return Err(PARSER_UNSUPPORTED.to_string());
+    }
+    Ok(())
+}
+
+fn reference_end(bytes: &[u8], start: usize) -> Option<usize> {
+    if start >= bytes.len() || !(bytes[start].is_ascii_alphanumeric() || bytes[start] == b'#') {
+        return None;
+    }
+    let mut i = start;
+    while i < bytes.len() && !matches!(bytes[i], b';' | b'<' | b'>' | b' ' | b'\t' | b'\r' | b'\n')
+    {
+        i += 1;
+    }
+    if bytes.get(i) == Some(&b';') {
+        Some(i + 1)
+    } else {
+        Some(i)
+    }
+}
+
+fn recognized_reference(reference: &str) -> bool {
+    // Numeric references are unambiguous only with a semicolon, and the
+    // parser is the authority for validity/range handling.
+    if reference.starts_with("&#") {
+        let doc = Html::parse_fragment(&format!("<span>{reference}</span>"));
+        return doc.errors.is_empty();
+    }
+    // Compare the parser's result against the literal. Unknown names remain
+    // unchanged; names that are only a prefix (for example `&notit;`) are
+    // rejected because html5ever changes the source but does not consume the
+    // complete named reference.
+    let doc = Html::parse_fragment(&format!("<span>{reference}</span>"));
+    if !doc.errors.is_empty() {
+        return false;
+    }
+    let mut text = String::new();
+    for node in doc.tree.root().descendants() {
+        if let Node::Text(t) = node.value() {
+            text.push_str(&t.text);
+        }
+    }
+    text != reference
 }
 
 fn is_excluded_tag(name: &str) -> bool {
@@ -268,6 +640,7 @@ fn is_block_tag(name: &str) -> bool {
             | "p"
             | "pre"
             | "section"
+            | "signed-section"
             | "table"
             | "tr"
             | "td"
@@ -276,7 +649,12 @@ fn is_block_tag(name: &str) -> bool {
     )
 }
 
-fn walk<'a>(root: NodeRef<'a, Node>, out: &mut String, base_url: Option<&Url>) -> Result<(), String> {
+fn walk<'a>(
+    root: NodeRef<'a, Node>,
+    out: &mut String,
+    base_url: Option<&Url>,
+    preserve_whitespace: bool,
+) -> Result<(), String> {
     // Iterative depth-first walk with an explicit heap stack, equivalent to the
     // natural recursion but bounded by heap rather than the call stack. Real-world
     // DOMs can nest deeply enough to overflow a native thread stack (a latent
@@ -300,7 +678,10 @@ fn walk<'a>(root: NodeRef<'a, Node>, out: &mut String, base_url: Option<&Url>) -
         match item {
             Work::CloseBlock => out.push('\n'),
             Work::Enter(node) => match node.value() {
-                Node::Text(t) => out.push_str(&normalize_text(&t.text, false)),
+                Node::Text(t) => out.push_str(&escape_at_signs(&normalize_text(
+                    &t.text,
+                    preserve_whitespace,
+                ))),
                 Node::Element(e) => {
                     let name = e.name();
                     if is_excluded_tag(name) {
@@ -344,7 +725,7 @@ fn append_attribute_records(
         let value = if attr == "href" || attr == "src" {
             canonicalize_url(raw, base_url)?
         } else {
-            normalize_text(raw, false).trim().to_string()
+            escape_at_signs(normalize_text(raw, false).trim())
         };
         if value.contains('\n') {
             return Err("attribute-canonicalization-failed".to_string());
@@ -364,6 +745,12 @@ fn append_attribute_records(
 }
 
 fn canonicalize_url(raw: &str, base_url: Option<&Url>) -> Result<String, String> {
+    // URL parsers generally strip C0 controls as part of their recovery. The
+    // signed profile must inspect the decoded HTML attribute first so that a
+    // reference such as `&#10;` cannot silently change its meaning.
+    if raw.chars().any(|c| c.is_control()) {
+        return Err("url-policy-violation".to_string());
+    }
     // The `url` crate is a WHATWG URL implementation: parsing already
     // lowercases scheme + host, punycodes IDN hosts, resolves dot-segments,
     // strips default ports, and preserves query + fragment.
@@ -380,15 +767,26 @@ fn canonicalize_url(raw: &str, base_url: Option<&Url>) -> Result<String, String>
                 .map_err(|_| "attribute-canonicalization-failed".to_string())?
         }
     };
-    Ok(parsed.to_string())
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("url-policy-violation".to_string());
+    }
+    Ok(escape_at_signs(&parsed.to_string()))
 }
 
-fn finalize_parts(text: &str) -> String {
+fn escape_at_signs(value: &str) -> String {
+    value.replace('@', "@@")
+}
+
+fn finalize_parts(text: &str, _preserve_whitespace: bool) -> String {
     let mut text = text.to_string();
     while text.contains("  ") {
         text = text.replace("  ", " ");
     }
-    while text.contains(" \n") || text.contains("\n ") || text.contains("\t\n") || text.contains("\n\t") {
+    while text.contains(" \n")
+        || text.contains("\n ")
+        || text.contains("\t\n")
+        || text.contains("\n\t")
+    {
         text = text.replace(" \n", "\n");
         text = text.replace("\n ", "\n");
         text = text.replace("\t\n", "\n");
@@ -424,7 +822,13 @@ pub fn canonicalize_claims(claims: &BTreeMap<String, String>) -> String {
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     entries
         .into_iter()
-        .map(|(k, v)| format!("{}:{}\n", k, v))
+        .map(|(k, v)| {
+            format!(
+                "{}:{}\n",
+                escape_claim_component(&k),
+                escape_claim_component(&v)
+            )
+        })
         .collect::<String>()
 }
 
@@ -432,9 +836,10 @@ pub fn canonicalize_claims(claims: &BTreeMap<String, String>) -> String {
 /// an empty normalized name is `claim-malformed`, and two names that
 /// normalize to the same value are `claim-duplicate`. Names are compared and
 /// sorted by their UTF-8 byte sequence (`String` ordering).
-pub fn canonicalize_claims_checked(
-    claims: &BTreeMap<String, String>,
-) -> Result<String, String> {
+pub fn canonicalize_claims_checked(claims: &BTreeMap<String, String>) -> Result<String, String> {
+    if claims.len() > 64 {
+        return Err("resource-limit-exceeded".to_string());
+    }
     let mut entries: Vec<(String, String)> = Vec::with_capacity(claims.len());
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (k, v) in claims {
@@ -443,14 +848,248 @@ pub fn canonicalize_claims_checked(
         if name.is_empty() {
             return Err("claim-malformed".to_string());
         }
+        if name.len() > 4096 || value.len() > 4096 {
+            return Err("resource-limit-exceeded".to_string());
+        }
         if !seen.insert(name.clone()) {
             return Err("claim-duplicate".to_string());
         }
         entries.push((name, value));
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(entries
+    let result: String = entries
         .into_iter()
-        .map(|(k, v)| format!("{}:{}\n", k, v))
-        .collect::<String>())
+        .map(|(k, v)| {
+            format!(
+                "{}:{}\n",
+                escape_claim_component(&k),
+                escape_claim_component(&v)
+            )
+        })
+        .collect();
+    if result.len() > MAX_DOCUMENT_BYTES {
+        return Err("resource-limit-exceeded".to_string());
+    }
+    Ok(result)
+}
+
+fn escape_claim_component(value: &str) -> String {
+    // Ordering matters: escape the escape character before introducing any
+    // escapes for the other delimiters.
+    value
+        .replace('\\', "\\\\")
+        .replace(':', "\\:")
+        .replace('\n', "\\n")
+}
+
+/// Canonicalize one raw JSON document according to RFC 8785 (JCS).
+///
+/// Parsing is done with a duplicate-preserving serde visitor before values are
+/// handed to `serde_json_canonicalizer`; serde_json::Value would silently keep
+/// only the last duplicate object member. JSON strings are not normalized.
+pub fn canonicalize_json_document(raw: &[u8]) -> Result<String, String> {
+    if raw.len() > MAX_DOCUMENT_BYTES {
+        return Err("resource-limit-exceeded".to_string());
+    }
+    enforce_json_nesting_limit(raw)?;
+    if has_lone_surrogate_escape(raw) {
+        return Err("jcs-invalid-surrogate".to_string());
+    }
+    let mut de = serde_json::Deserializer::from_slice(raw);
+    let value = StrictJson::deserialize(&mut de).map_err(map_json_error)?;
+    de.end().map_err(map_json_error)?;
+    let output = serde_json_canonicalizer::to_string(&value)
+        .map_err(|e| format!("jcs-invalid-json: {e}"))?;
+    if output.len() > MAX_DOCUMENT_BYTES {
+        return Err("resource-limit-exceeded".to_string());
+    }
+    Ok(output)
+}
+
+fn enforce_json_nesting_limit(raw: &[u8]) -> Result<(), String> {
+    const MAX_NESTING_DEPTH: usize = 256;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for byte in raw {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match *byte {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > MAX_NESTING_DEPTH {
+                    return Err("resource-limit-exceeded".to_string());
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn map_json_error(error: serde_json::Error) -> String {
+    let msg = error.to_string();
+    if msg.contains("surrogate") {
+        "jcs-invalid-surrogate".to_string()
+    } else if msg.contains("number out of range") || msg.contains("invalid number") {
+        "jcs-number".to_string()
+    } else if msg.contains("duplicate object key") {
+        "jcs-duplicate-key".to_string()
+    } else {
+        format!("jcs-invalid-json: {msg}")
+    }
+}
+
+fn hex4(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let mut value = 0u16;
+    for &c in &bytes[..4] {
+        value = value.checked_mul(16)?.checked_add(match c {
+            b'0'..=b'9' => (c - b'0') as u16,
+            b'a'..=b'f' => (c - b'a' + 10) as u16,
+            b'A'..=b'F' => (c - b'A' + 10) as u16,
+            _ => return None,
+        })?;
+    }
+    Some(value)
+}
+
+fn has_lone_surrogate_escape(raw: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 5 < raw.len() {
+        // A slash preceded by another slash is the escaped literal `\\`, not
+        // the start of a Unicode escape. Count the run to distinguish the two
+        // cases without pulling in a second JSON parser.
+        let mut slash_run = 0;
+        let mut p = i;
+        while p > 0 && raw[p - 1] == b'\\' {
+            slash_run += 1;
+            p -= 1;
+        }
+        if raw[i] == b'\\' && raw[i + 1] == b'u' && slash_run % 2 == 0 {
+            if let Some(value) = hex4(&raw[i + 2..i + 6]) {
+                if (0xD800..=0xDBFF).contains(&value) {
+                    let paired = i + 11 < raw.len()
+                        && raw[i + 6] == b'\\'
+                        && raw[i + 7] == b'u'
+                        && hex4(&raw[i + 8..i + 12])
+                            .is_some_and(|v| (0xDC00..=0xDFFF).contains(&v));
+                    if !paired {
+                        return true;
+                    }
+                    i += 12;
+                    continue;
+                }
+                if (0xDC00..=0xDFFF).contains(&value) {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+#[derive(Debug)]
+enum StrictJson {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<StrictJson>),
+    Object(BTreeMap<String, StrictJson>),
+}
+
+impl Serialize for StrictJson {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Null => serializer.serialize_none(),
+            Self::Bool(v) => serializer.serialize_bool(*v),
+            Self::Number(v) => serializer.serialize_f64(*v),
+            Self::String(v) => serializer.serialize_str(v),
+            Self::Array(v) => v.serialize(serializer),
+            Self::Object(v) => v.serialize(serializer),
+        }
+    }
+}
+
+struct StrictVisitor;
+
+impl<'de> Visitor<'de> for StrictVisitor {
+    type Value = StrictJson;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(StrictJson::Null)
+    }
+    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(StrictJson::Bool(v))
+    }
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(StrictJson::String(v.to_owned()))
+    }
+    fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+        Ok(StrictJson::String(v))
+    }
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+        number(v as f64, self)
+    }
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+        number(v as f64, self)
+    }
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+        number(v, self)
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut values = Vec::new();
+        while let Some(v) = seq.next_element_seed(StrictSeed)? {
+            values.push(v);
+        }
+        Ok(StrictJson::Array(values))
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut values = BTreeMap::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if values.contains_key(&key) {
+                return Err(de::Error::custom("duplicate object key"));
+            }
+            values.insert(key, map.next_value_seed(StrictSeed)?);
+        }
+        Ok(StrictJson::Object(values))
+    }
+}
+
+fn number<E: de::Error>(v: f64, _visitor: StrictVisitor) -> Result<StrictJson, E> {
+    if v.is_finite() {
+        Ok(StrictJson::Number(v))
+    } else {
+        Err(E::custom("number out of range"))
+    }
+}
+
+struct StrictSeed;
+impl<'de> de::DeserializeSeed<'de> for StrictSeed {
+    type Value = StrictJson;
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_any(StrictVisitor)
+    }
+}
+impl<'de> Deserialize<'de> for StrictJson {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<StrictJson, D::Error> {
+        d.deserialize_any(StrictVisitor)
+    }
 }

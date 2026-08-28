@@ -7,8 +7,19 @@
 use std::collections::BTreeMap;
 
 use htmltrust_canonicalization::{
-    canonicalize_claims, extract_canonical_text, normalize_text,
+    canonicalize_claims, canonicalize_json_document, extract_canonical_text,
+    extract_canonical_text_with_options, extract_claims_from_signed_section, normalize_text,
+    try_extract_canonical_text, try_normalize_text, ExtractOptions, MAX_DOCUMENT_BYTES,
 };
+
+#[test]
+fn jcs_rejects_excessive_nesting() {
+    let document = format!("{}0{}", "[".repeat(257), "]".repeat(257));
+    assert_eq!(
+        canonicalize_json_document(document.as_bytes()),
+        Err("resource-limit-exceeded".to_string())
+    );
+}
 
 /// One conformance vector. `(input_a, input_b, should_match, description)`.
 type Case = (&'static str, &'static str, bool, &'static str);
@@ -112,6 +123,55 @@ fn preserve_whitespace_skips_collapse() {
 }
 
 #[test]
+fn extraction_options_use_shared_finalization() {
+    let options = ExtractOptions {
+        preserve_whitespace: true,
+        base_url: None,
+    };
+    assert_eq!(
+        extract_canonical_text_with_options("<pre>line1\n    line2\t\tline3</pre>", options),
+        "line1\nline2\t\tline3",
+    );
+    assert_eq!(
+        extract_canonical_text_with_options("<p>a   b</p>", ExtractOptions::default()),
+        "a b",
+    );
+}
+
+#[test]
+fn fallible_text_apis_enforce_source_and_output_limits() {
+    let source = "x".repeat(MAX_DOCUMENT_BYTES + 1);
+    assert_eq!(
+        try_normalize_text(&source, false),
+        Err("resource-limit-exceeded".into())
+    );
+    assert_eq!(
+        try_extract_canonical_text(&source),
+        Err("resource-limit-exceeded".into())
+    );
+
+    // Ellipsis expansion makes a source below the limit produce an oversized
+    // canonical output, which must also be rejected.
+    let expanding = "…".repeat(MAX_DOCUMENT_BYTES / 2);
+    assert_eq!(
+        try_normalize_text(&expanding, false),
+        Err("resource-limit-exceeded".into())
+    );
+}
+
+#[test]
+fn fallible_text_apis_reject_invalid_utf8() {
+    assert_eq!(
+        htmltrust_canonicalization::try_normalize_text_v1(b"\xff", false),
+        Err("invalid-utf8".into())
+    );
+    assert_eq!(
+        htmltrust_canonicalization::try_extract_canonical_text_v1(b"\xff", None),
+        Err("invalid-utf8".into())
+    );
+}
+
+#[test]
 fn idempotent_for_typical_input() {
     let src = "\u{201C}Caf\u{00E9}\u{2014}test\u{2026}\u{201D}";
     let once = normalize_text(src, false);
@@ -141,6 +201,14 @@ fn extract_excluded_elements_removed() {
 <meta name=\"claim:License\" content=\"CC-BY-4.0\">\
 <p>after</p>";
     assert_eq!(extract_canonical_text(html), "before\nafter");
+}
+
+#[test]
+fn extract_rejects_malformed_comments() {
+    assert_eq!(
+        try_extract_canonical_text("<!-- a -- b -->x"),
+        Err("parser-profile-unsupported".to_string())
+    );
 }
 
 #[test]
@@ -197,6 +265,29 @@ fn extract_relative_url_no_base_fails() {
     )
     .unwrap_err();
     assert!(err.contains("attribute-canonicalization-failed"));
+}
+
+#[test]
+fn extracts_direct_child_claims() {
+    let claims = extract_claims_from_signed_section(
+        r#"<signed-section><meta name="author" content=" Alice "><meta name="signed-at" content="2026-08-27T12:00:00Z"><div><meta name="author" content="Nested"></div></signed-section>"#,
+    )
+    .unwrap();
+    assert_eq!(claims.len(), 2);
+    assert_eq!(claims.get("author").map(String::as_str), Some("Alice"));
+    assert_eq!(
+        claims.get("signed-at").map(String::as_str),
+        Some("2026-08-27T12:00:00Z")
+    );
+}
+
+#[test]
+fn rejects_duplicate_extracted_claim_names() {
+    let error = extract_claims_from_signed_section(
+        r#"<meta name="author" content="A"><meta name=" author " content="B">"#,
+    )
+    .unwrap_err();
+    assert_eq!(error, "claim-duplicate");
 }
 
 #[test]

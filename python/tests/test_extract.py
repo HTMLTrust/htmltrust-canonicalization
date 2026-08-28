@@ -84,6 +84,25 @@ def test_table_cells_separated():
     assert extract_canonical_text(html) == "a\nb\nc\nd"
 
 
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<p>x",
+        "<table><tr><td>x</td></tr>tail</table>",
+    ],
+)
+def test_parser_preflight_rejects_unclosed_and_foster_parented_text(html):
+    with pytest.raises(ValueError, match="parser-profile-unsupported"):
+        extract_canonical_text(html)
+
+
+def test_colon_qualified_elements_count_toward_depth_limit():
+    nested = "".join("<x:y>" for _ in range(257))
+    closing = "".join("</x:y>" for _ in range(257))
+    with pytest.raises(ValueError, match="resource-limit-exceeded"):
+        extract_canonical_text(nested + "x" + closing)
+
+
 def test_inline_link_no_separator():
     """Anchor tags are inline; they must NOT add separators. With a base URL
     the relative href resolves and emits a signed-attribute record."""
@@ -100,6 +119,11 @@ def test_relative_url_no_base_fails():
     """A relative href with no base URL MUST fail (draft §4.3.2)."""
     with pytest.raises(ValueError, match="attribute-canonicalization-failed"):
         extract_canonical_text('<p><a href="x">here</a></p>')
+
+
+def test_invalid_base_url_fails_without_url_attributes():
+    with pytest.raises(ValueError, match="attribute-canonicalization-failed"):
+        extract_canonical_text("<p>x</p>", base_url="not a URL")
 
 
 def test_signed_semantic_attributes_are_canonicalized():

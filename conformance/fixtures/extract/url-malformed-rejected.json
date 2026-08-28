@@ -1,0 +1,6 @@
+{
+  "name": "url-malformed-rejected",
+  "description": "A malformed signed URL fails attribute canonicalization.",
+  "input": "<p><a href=\"https://[::1\">x</a></p>",
+  "error": "attribute-canonicalization-failed"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "parser-malformed-comment",
+  "description": "A comment containing the invalid double-hyphen form is outside the portable parser profile.",
+  "input": "<!-- a -- b -->x",
+  "error": "parser-profile-unsupported"
+}

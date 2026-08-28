@@ -1,0 +1,6 @@
+{
+  "name": "lone-low-surrogate",
+  "description": "An unpaired low surrogate is outside I-JSON.",
+  "input": "\"\\uDC00\"",
+  "error": "jcs-invalid-surrogate"
+}
