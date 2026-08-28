@@ -6,14 +6,21 @@
       "version": "22"
     },
     "ghcr.io/devcontainers/features/go:1": {
-      "version": "1.23"
+      "version": "1.25"
     },
     "ghcr.io/devcontainers/features/php:1": {
-      "version": "8.3",
+      "version": "8.5",
       "installComposer": true
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    },
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "1.86",
+      "profile": "minimal"
     }
   },
-  "postCreateCommand": "cd go && go mod tidy && cd ../php && composer install --no-interaction",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
   "customizations": {
     "vscode": {
       "extensions": [
