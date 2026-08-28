@@ -39,6 +39,25 @@ def test_excluded_elements_removed():
     assert extract_canonical_text(html) == "before\nafter"
 
 
+def test_excluded_rawtext_with_quoted_delimiters_is_removed():
+    """Excluded content may contain tag-like text and quoted ``>`` chars."""
+    html = (
+        "<p>before</p>"
+        "<script data=\">\"><iframe>ignored</iframe><p>ignored</p></script>"
+        "<style title='>'>.x{content:'<p>ignored</p>'}</style>"
+        "<iframe src='https://example.org/?q=>'><p>ignored</p></iframe>"
+        "<p>after</p>"
+    )
+    assert extract_canonical_text(html) == "before\nafter"
+
+
+def test_excluded_preflight_scanner_does_not_backtrack_on_unterminated_tag():
+    """An unterminated unquoted attribute is rejected in bounded time."""
+    source = "<script " + ("x" * 4096)
+    with pytest.raises(ValueError, match="parser-profile-unsupported"):
+        extract_canonical_text(source)
+
+
 def test_entity_decoding():
     """HTML entities must be decoded by the parser."""
     assert (

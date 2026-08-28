@@ -74,12 +74,7 @@ def _preflight_source(html: str) -> None:
     # tree builder. This keeps the ceiling independent of BeautifulSoup's
     # synthetic html/head/body wrapper nodes and makes the limit effective
     # before traversal can recurse.
-    profile_source = re.sub(
-        r"(<\s*(script|style|iframe)\b(?:[^>\"']+|\"[^\"]*\"|'[^']*')*>).*?(</\s*\2\s*>)",
-        r"\1\3",
-        html,
-        flags=re.I | re.S,
-    )
+    profile_source = _strip_excluded_element_contents(html)
     _check_source_depth(profile_source)
 
     parser = HTMLParser(namespaceHTMLElements=False, strict=False)
@@ -174,6 +169,148 @@ def _check_source_depth(source: str) -> None:
         raise ValueError("parser-profile-unsupported")
     if stack:
         raise ValueError("parser-profile-unsupported")
+
+
+def _strip_excluded_element_contents(source: str) -> str:
+    """Remove the contents of paired raw-text/profile-excluded elements.
+
+    This pass exists only to keep script, style, and iframe contents from
+    affecting the source-depth check.  The previous implementation used a
+    nested regular expression for quoted attributes and arbitrary element
+    contents.  A malformed opening tag could make that expression explore an
+    exponential number of partitions.  The scanner below advances through
+    each character at most a constant number of times and rejects incomplete
+    excluded opening tags with the parser's profile error.
+    """
+    excluded = frozenset(("script", "style", "iframe"))
+    output: list[str] = []
+    cursor = 0
+    source_length = len(source)
+
+    while cursor < source_length:
+        start = _find_excluded_start(source, cursor, excluded)
+        if start is None:
+            output.append(source[cursor:])
+            break
+
+        output.append(source[cursor:start])
+        opening_end = _scan_tag_end(source, start)
+        if opening_end is None:
+            # The HTML5 diagnostics reject an incomplete excluded opening
+            # tag. Reject it here before the source-depth tokenizer sees the
+            # malformed token and can spend unbounded time recovering it.
+            raise ValueError("parser-profile-unsupported")
+
+        name = _start_tag_name(source, start)
+        if name is None or name not in excluded:
+            output.append(source[start:opening_end])
+            cursor = opening_end
+            continue
+
+        closing = _find_matching_close(source, opening_end, name)
+        if closing is None:
+            # Keep a complete but unpaired element available to the parser
+            # diagnostics. Its opening token is well-formed, so the bounded
+            # source-depth scan can report the missing end tag.
+            output.append(source[start:])
+            break
+
+        close_start, close_end = closing
+        output.append(source[start:opening_end])
+        output.append(source[close_start:close_end])
+        cursor = close_end
+
+    return "".join(output)
+
+
+def _find_excluded_start(
+    source: str,
+    offset: int,
+    excluded: frozenset[str],
+) -> int | None:
+    """Find the next source spelling of an excluded start tag."""
+    index = offset
+    while True:
+        index = source.find("<", index)
+        if index < 0:
+            return None
+        name = _start_tag_name(source, index)
+        if name in excluded:
+            return index
+        index += 1
+
+
+def _start_tag_name(source: str, start: int) -> str | None:
+    """Return a candidate start-tag name using the profile regex grammar."""
+    if start >= len(source) or source[start] != "<":
+        return None
+    index = start + 1
+    while index < len(source) and source[index].isspace():
+        index += 1
+    if index >= len(source) or not ("a" <= source[index].lower() <= "z"):
+        return None
+
+    # The former expression captures the literal excluded name and applies a
+    # regex word boundary.  Keep that spelling, including qualified names
+    # such as ``<script:foo>``, rather than attempting to implement the full
+    # HTML tag-name grammar here.
+    for name in ("script", "style", "iframe"):
+        end = index + len(name)
+        if source[index:end].lower() != name:
+            continue
+        if end == len(source) or not (
+            source[end].isalnum() or source[end] == "_"
+        ):
+            return name
+    return None
+
+
+def _scan_tag_end(source: str, start: int) -> int | None:
+    """Return the first unquoted ``>`` after a candidate tag start."""
+    quote: str | None = None
+    index = start + 1
+    while index < len(source):
+        char = source[index]
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == ">":
+            return index + 1
+        index += 1
+    return None
+
+
+def _find_matching_close(
+    source: str,
+    offset: int,
+    name: str,
+) -> tuple[int, int] | None:
+    """Find ``</name>`` with the whitespace/case rules of the old regex."""
+    index = offset
+    name_length = len(name)
+    source_length = len(source)
+    while True:
+        index = source.find("<", index)
+        if index < 0:
+            return None
+        cursor = index + 1
+        if cursor >= source_length or source[cursor] != "/":
+            index += 1
+            continue
+        cursor += 1
+        while cursor < source_length and source[cursor].isspace():
+            cursor += 1
+        if source[cursor:cursor + name_length].lower() != name:
+            index += 1
+            continue
+        cursor += name_length
+        while cursor < source_length and source[cursor].isspace():
+            cursor += 1
+        if cursor < source_length and source[cursor] == ">":
+            return index, cursor + 1
+        index += 1
 
 
 def _validate_base_url(base_url: str | None) -> str | None:
