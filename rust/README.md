@@ -48,10 +48,10 @@ htmltrust-canonicalization = "0.3"
   and output limits.
 - `try_normalize_text_v1` accepts bytes and rejects invalid UTF-8 as
   `parser-profile-unsupported`.
-- `try_extract_canonical_text_with_options` parses HTML with explicit
-  compatibility whitespace and base URL options. Profile-v1 callers use
-  `preserve_whitespace: false`; the portable profile rejects nesting deeper
-  than 256 elements.
+- `try_extract_canonical_text_with_options` parses HTML with explicit legacy
+  compatibility whitespace and resolved base URL options. Profile-v1 callers
+  use `preserve_whitespace: false`; the portable profile rejects nesting
+  deeper than 256 elements.
 - `canonicalize_claims_checked` validates, sorts, escapes, and serializes
   claim metadata.
 - `canonicalize_json_document` validates and canonicalizes one raw JSON
@@ -93,6 +93,11 @@ assert_eq!(claim_bytes, "License:CC-BY-4.0\n");
 
 Relative `href` and `src` attributes require an HTTPS base URL. The safe URL
 profile rejects credentials, control characters, and unsupported schemes.
+
+The caller's source-snapshot layer must compute the document base URL using the
+HTML Standard, including any `<base>` element, and pass that resolved URL as
+`base_url`. This binding does not discover `<base>` elements itself; relative
+signed URLs are rejected when no base URL is supplied.
 
 ## Native FFI
 

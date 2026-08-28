@@ -131,11 +131,20 @@ expected errors, and the review process for new cases.
 6. Invisible formatting and bidirectional-control characters removed.
 7. ZWNJ and ZWJ preserved because they can carry meaning.
 
+The `preserveWhitespace`/`preserve_whitespace` option is retained for 0.2
+compatibility. It is outside the v1 profile, whose callers must use the
+default `false` value; v1 does not bind verbatim whitespace inside `<pre>`.
+
 `extractCanonicalText` parses HTML, excludes metadata and executable
 elements, emits boundaries for block elements, and normalizes signed
 `href`, `src`, `alt`, and `aria-label` attributes. Relative `href` and `src`
 values require the document base URL. The portable profile rejects source
 nesting deeper than 256 elements before canonical traversal.
+
+The canonicalizer does not discover or apply an HTML `<base>` element. The
+source-snapshot layer must compute the document base URL using the HTML
+Standard, use the final response URL as its fallback, and pass that resolved
+URL to the binding. A relative signed URL without that input is rejected.
 
 `canonicalizeClaims` sorts claim names by UTF-8 byte order, normalizes names and
 values, and returns the byte sequence used for signing. The JSON

@@ -98,8 +98,11 @@ def extract_canonical_text(
 
     Args:
         html: HTML fragment to canonicalize.
-        preserve_whitespace: Passed through to ``normalize_text``.
-            Defaults to ``False``.
+        preserve_whitespace: Legacy 0.2 option passed through to
+            ``normalize_text``. v1 callers must leave it ``False``.
+        base_url: Resolved document base URL computed by the source-snapshot
+            layer, including any HTML ``<base>`` element. This binding does
+            not discover ``<base>`` elements.
 
     Returns:
         Canonical text, ready to be hashed. Trimmed of leading/trailing
@@ -153,7 +156,9 @@ def _check_source_depth(source: str) -> None:
             continue
         if name in {"svg", "math", "foreignobject"}:
             raise ValueError("parser-profile-unsupported")
-        if name not in _VOID_TAGS and not _is_self_closing(source, token_start, token_end):
+        if name not in _VOID_TAGS and _is_self_closing(source, token_start, token_end):
+            raise ValueError("parser-profile-unsupported")
+        if name not in _VOID_TAGS:
             stack.append(name)
             if len(stack) > _MAX_ELEMENT_DEPTH:
                 raise ValueError("resource-limit-exceeded")
@@ -253,11 +258,16 @@ def _profile_tag_name(source: str, start: int) -> str | None:
 
 
 def _is_self_closing(source: str, start: int, end: int) -> bool:
-    r"""Check the former ``/\s*>`` self-closing suffix without a regex."""
+    r"""Check for a self-closing flag outside an unquoted attribute value."""
     index = end - 2
     while index >= start and source[index].isspace():
         index -= 1
-    return index >= start and source[index] == "/"
+    if index < start or source[index] != "/":
+        return False
+    prefix = source[start:index]
+    if prefix and prefix[-1].isspace():
+        return True
+    return re.fullmatch(r"<\s*[a-z][^\t\n\f\r />]*", prefix, re.IGNORECASE) is not None
 
 
 def _strip_excluded_element_contents(source: str) -> str:

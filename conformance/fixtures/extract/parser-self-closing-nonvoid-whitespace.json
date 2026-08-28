@@ -1,0 +1,6 @@
+{
+  "name": "parser-self-closing-nonvoid-whitespace",
+  "description": "Whitespace around a non-void self-closing flag remains a parser error.",
+  "input": "<signed-section><div \t/ >Text</signed-section>",
+  "error": "parser-profile-unsupported"
+}
