@@ -5,6 +5,9 @@ import {
   extractClaimsFromSignedSection,
   decodeCanonicalBase64,
   buildSignatureBinding,
+  buildSigningPayloadV1,
+  deriveSigningLocationV1,
+  validateSignedAtV1,
   buildEndorsementBinding,
   verifySignature,
   didWebResolver,
@@ -13,6 +16,7 @@ import {
   resolveKey,
   verifyEndorsement,
   isKeyRevoked,
+  canonicalizeJsonDocument,
 } from './index.js';
 import * as nodeCrypto from 'node:crypto';
 import { generateKeyPairSync, sign as nodeSign, createHash } from 'node:crypto';
@@ -110,13 +114,42 @@ await check('buildSignatureBinding rejects bare hostname domain field', () => {
   assert(threw, 'expected bare hostname to be rejected');
 });
 
+await check('v1 location derivation removes fragments and supports origin scope', () => {
+  assertEq(
+    deriveSigningLocationV1('HTTPS://BÜCHER.EXAMPLE:443/a/../article?q=1#part', 'url'),
+    'https://xn--bcher-kva.example/article?q=1',
+  );
+  assertEq(
+    deriveSigningLocationV1('https://example.org:8443/a?q=1#part', 'origin'),
+    'https://example.org:8443',
+  );
+});
+
+await check('v1 timestamp validation rejects impossible dates and fractions', () => {
+  for (const value of ['2023-02-29T23:59:59Z', '2026-01-15T12:00:00.000Z']) {
+    let threw = false;
+    try { validateSignedAtV1(value); } catch { threw = true; }
+    assert(threw, `expected ${value} to fail`);
+  }
+});
+
 await check('canonicalizeClaims uses colon lines and signs author/signed-at', () => {
   const out = canonicalizeClaims({
     'signed-at': '2026-05-01T10:30:00Z',
     author: 'Alice Example',
     'claim:License': 'CC-BY-4.0',
   });
-  assertEq(out, 'author:Alice Example\nclaim:License:CC-BY-4.0\nsigned-at:2026-05-01T10:30:00Z\n');
+  assertEq(out, 'author:Alice Example\nclaim\\:License:CC-BY-4.0\nsigned-at:2026-05-01T10\\:30\\:00Z\n');
+});
+
+await check('canonicalizeClaims rejects non-string values', () => {
+  let threw = false;
+  try {
+    canonicalizeClaims({ count: 42 });
+  } catch (error) {
+    threw = String(error).includes('claim-malformed');
+  }
+  assert(threw, 'expected non-string claim value to fail');
 });
 
 await check('extractClaimsFromSignedSection includes all direct child meta only', () => {
@@ -153,6 +186,55 @@ await check('extractCanonicalText signs href/src/alt/aria-label attributes', () 
   );
 });
 
+await check('extractCanonicalText rejects malformed comment bodies', () => {
+  let threw = false;
+  try { extractCanonicalText('<!-- a -- b -->x'); } catch (error) {
+    threw = String(error).includes('parser-profile-unsupported');
+  }
+  assert(threw, 'double hyphen in a comment must be rejected');
+});
+
+await check('extractCanonicalText accepts qualified tag names and enforces element depth', () => {
+  assertEq(extractCanonicalText('<x:y>qualified</x:y>'), 'qualified');
+  const withinLimit = '<x:y>'.repeat(256) + 'deep' + '</x:y>'.repeat(256);
+  assertEq(extractCanonicalText(withinLimit), 'deep');
+  let threw = false;
+  try {
+    extractCanonicalText('<x:y>'.repeat(257) + 'too deep' + '</x:y>'.repeat(257));
+  } catch (error) {
+    threw = String(error).includes('resource-limit-exceeded');
+  }
+  assert(threw, 'qualified element nesting beyond 256 levels must be rejected');
+  threw = false;
+  try { extractCanonicalText('<svg><x:y>foreign</x:y></svg>'); } catch (error) {
+    threw = String(error).includes('parser-profile-unsupported');
+  }
+  assert(threw, 'foreign-content rejection must remain in force');
+});
+
+await check('canonicalizeJsonDocument accepts escaped surrogate pairs', () => {
+  assertEq(canonicalizeJsonDocument('{"music":"\\uD834\\uDD1E"}'), '{"music":"𝄞"}');
+  for (const input of [
+    '{"music":"\\uD834"}',
+    '{"music":"\\uDD1E"}',
+    '{"music":"\\uD834\\u0041"}',
+  ]) {
+    let threw = false;
+    try { canonicalizeJsonDocument(input); } catch (error) {
+      threw = String(error).includes('jcs-invalid-surrogate');
+    }
+    assert(threw, `invalid surrogate sequence must be rejected: ${input}`);
+  }
+});
+
+await check('canonicalizeJsonDocument rejects excessive nesting', () => {
+  let threw = false;
+  try { canonicalizeJsonDocument('['.repeat(257) + '0' + ']'.repeat(257)); } catch (error) {
+    threw = String(error).includes('resource-limit-exceeded');
+  }
+  assert(threw, 'JCS nesting beyond 256 levels must be rejected');
+});
+
 await check('decodeCanonicalBase64 rejects padded and base64url forms', () => {
   assertEq(new TextDecoder().decode(decodeCanonicalBase64('Zm9v')), 'foo');
   let padded = false;
@@ -171,6 +253,18 @@ await check('buildSignatureBinding throws on missing field', () => {
     threw = true;
   }
   assert(threw, 'expected throw on missing field');
+});
+
+await check('buildEndorsementBinding requires non-empty string members', () => {
+  for (const field of ['endorser', 'endorsement', 'algorithm', 'timestamp']) {
+    const endorsement = {
+      endorser: 'a', endorsement: 'b', algorithm: 'ed25519', timestamp: '2026-01-01T00:00:00Z',
+    };
+    endorsement[field] = field === 'endorser' ? 1 : '';
+    let threw = false;
+    try { buildEndorsementBinding(endorsement); } catch { threw = true; }
+    assert(threw, `${field} must be a non-empty string`);
+  }
 });
 
 await check('verifySignature ed25519 round-trip', async () => {
@@ -370,6 +464,41 @@ await check('didWebResolver fetches did.json and extracts key', async () => {
   assert(resolved.publicKeyPem.includes('BEGIN PUBLIC KEY'), 'expected PEM');
 });
 
+await check('didWebResolver preserves path escapes and decodes an encoded port', async () => {
+  let requested;
+  const resolver = didWebResolver({
+    fetch: async (url) => {
+      requested = url;
+      return {
+        ok: true,
+        headers: { get: (name) => name === 'content-type' ? 'application/json' : null },
+        text: async () => JSON.stringify({ verificationMethod: [{ publicKeyPem: edPubPem }] }),
+      };
+    },
+  });
+  const resolved = await resolver.resolve('did:web:example.com%3A3000:user%2Falice#key-1');
+  assert(resolved, 'expected did:web resolution');
+  assertEq(requested, 'https://example.com:3000/user%2Falice/did.json');
+});
+
+await check('didWebResolver rejects empty userinfo in authority', async () => {
+  let called = false;
+  const resolver = didWebResolver({
+    fetch: async () => {
+      called = true;
+      return { ok: false };
+    },
+  });
+  let rejected = false;
+  try {
+    await resolver.resolve('did:web:@example.com');
+  } catch (error) {
+    rejected = String(error).includes('did:web invalid domain');
+  }
+  assert(rejected, 'empty userinfo authority must be rejected');
+  assert(!called, 'invalid authority must not invoke fetch');
+});
+
 await check('directUrlResolver fetches http URL keyid', async () => {
   const resolved = await resolveKey(`${base}/key.json`, [directUrlResolver()]);
   assert(resolved, 'expected resolution');
@@ -381,6 +510,36 @@ await check('directUrlResolver accepts vendor JSON media types', async () => {
   assert(resolved, 'expected resolution');
   assertEq(resolved.algorithm, 'ed25519');
   assert(resolved.publicKeyPem.includes('BEGIN PUBLIC KEY'), 'expected parsed key document');
+});
+
+await check('remote key fetchers cap streamed response bodies', async () => {
+  const chunks = [new Uint8Array(64 * 1024), new Uint8Array(1)];
+  let reads = 0;
+  let cancelled = false;
+  const response = {
+    ok: true,
+    headers: { get: (name) => name === 'content-type' ? 'application/json' : null },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (reads >= chunks.length) return { done: true, value: undefined };
+            return { done: false, value: chunks[reads++] };
+          },
+          async cancel() { cancelled = true; },
+        };
+      },
+    },
+  };
+  let rejected = false;
+  try {
+    await directUrlResolver({ fetch: async () => response }).resolve('http://example.test/key.json');
+  } catch (error) {
+    rejected = String(error).includes('resource-limit-exceeded');
+  }
+  assert(rejected, 'oversized streamed key response must fail');
+  assert(cancelled, 'oversized response stream must be cancelled');
+  assertEq(reads, 2, 'stream should stop at the first oversized chunk');
 });
 
 await check('directUrlResolver decodes canonical SPKI key documents', async () => {
@@ -466,6 +625,36 @@ await check('verifyEndorsement fails on tampered hash', async () => {
   assert(!ok, 'tampered endorsement must not verify');
 });
 
+await check('verifyEndorsement fails closed on expiry and revokedBy lifecycle fields', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
+  const keyid = 'did:web:endorsement-lifecycle.example';
+  const resolver = { resolve: async () => ({ keyid, publicKeyPem, algorithm: 'ed25519' }) };
+  const sign = (unsigned) => ({
+    ...unsigned,
+    signature: nodeSign(null, Buffer.from(buildEndorsementBinding(unsigned)), privateKey)
+      .toString('base64').replace(/=+$/, ''),
+  });
+  const baseEndorsement = {
+    endorser: keyid,
+    endorsement: 'sha256:lifecycle',
+    timestamp: '2026-04-28T12:00:00Z',
+    algorithm: 'ed25519',
+  };
+  assert(await verifyEndorsement(sign({ ...baseEndorsement, expires: '2999-01-01T00:00:00Z' }), [resolver]), 'future expiry should verify');
+  for (const field of [
+    { expires: 'nonsense' },
+    { expires: '2020-01-01T00:00:00Z' },
+    { expires: '2999-01-01T00:00:00+00:00' },
+    { expires: '' },
+    { revokedBy: '' },
+    { revokedBy: 'did:web:authority.example' },
+    { revokedBy: 42 },
+  ]) {
+    assert(!(await verifyEndorsement(sign({ ...baseEndorsement, ...field }), [resolver])), `${Object.keys(field)[0]} must fail closed`);
+  }
+});
+
 await check('end-to-end test vector reproduces hashes, payload, and signature', async () => {
   const v = JSON.parse(
     readFileSync(new URL('../conformance/vectors/vector-01.json', import.meta.url), 'utf8'),
@@ -476,10 +665,13 @@ await check('end-to-end test vector reproduces hashes, payload, and signature', 
   const claims = canonicalizeClaims(extractClaimsFromSignedSection(v.input.html));
   const contentHash = sha(content);
   const claimsHash = sha(claims);
-  const payload = buildSignatureBinding({
+  const payload = buildSigningPayloadV1({
     contentHash,
     claimsHash,
-    domain: v.input.domain,
+    documentURL: v.input.documentURL,
+    scope: v.input.scope,
+    keyid: v.input.keyid,
+    algorithm: v.algorithm,
     signedAt: v.input.signedAt,
   });
   assertEq(content, v.canonicalContent, 'canonicalContent');

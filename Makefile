@@ -5,11 +5,12 @@
 # under `conformance/fixtures/`. `make conformance` exercises every
 # runnable language.
 
-.PHONY: conformance conformance-update conformance-js conformance-go \
+.PHONY: test-docker conformance conformance-update conformance-js conformance-go \
         conformance-php conformance-python conformance-rust help
 
 help:
 	@echo "Targets:"
+	@echo "  test-docker         Test all five bindings in isolated containers."
 	@echo "  conformance         Run every per-language conformance runner."
 	@echo "  conformance-update  Regenerate fixture 'expected' fields from"
 	@echo "                      the current Python+Rust output."
@@ -18,6 +19,9 @@ help:
 
 conformance:
 	./conformance/run-all.sh
+
+test-docker:
+	./scripts/test-in-docker.sh
 
 # Regenerate fixture expected fields. Run each available language with
 # --update; later runs overwrite earlier ones if they disagree, which
@@ -42,5 +46,5 @@ conformance-python:
 	python3 conformance/runners/run-python.py
 
 conformance-rust:
-	cargo run --quiet --release \
+	cargo run --quiet --release --locked \
 	    --manifest-path conformance/runners/run-rust/Cargo.toml

@@ -10,17 +10,120 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
+	"time"
+
+	whatwgurl "github.com/nlnwa/whatwg-url/url"
 )
 
-// BuildSignatureBinding returns the canonical signing payload used to compute
-// or verify a content signature, as defined in HTMLTrust spec §2.1:
+const (
+	SigningProfileV1          = "htmltrust-signature-v1"
+	CanonicalizationProfileV1 = "htmltrust-c14n-v1"
+	AttributeProfileV1        = "htmltrust-attrs-v1"
+	URLProfileV1              = "htmltrust-safe-url-v1"
+	SigningContextV1          = "https://htmltrust.org/protocol/signed-section"
+)
+
+type SigningProfileV1Input struct {
+	ContentHash string
+	ClaimsHash  string
+	DocumentURL string
+	Scope       string
+	KeyID       string
+	Algorithm   string
+	SignedAt    string
+}
+
+type signingObjectV1 struct {
+	Algorithm               string `json:"algorithm"`
+	AttributeProfile        string `json:"attributeProfile"`
+	CanonicalizationProfile string `json:"canonicalizationProfile"`
+	ClaimsHash              string `json:"claimsHash"`
+	ContentHash             string `json:"contentHash"`
+	Context                 string `json:"context"`
+	KeyID                   string `json:"keyid"`
+	Location                string `json:"location"`
+	Profile                 string `json:"profile"`
+	Scope                   string `json:"scope"`
+	SignedAt                string `json:"signedAt"`
+	URLProfile              string `json:"urlProfile"`
+}
+
+var signedAtV1Pattern = regexp.MustCompile(`^(?:[0-9]{4})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$`)
+
+func ValidateSignedAtV1(value string) error {
+	if !signedAtV1Pattern.MatchString(value) || strings.HasPrefix(value, "0000-") {
+		return fmt.Errorf("timestamp-invalid")
+	}
+	parsed, err := time.Parse("2006-01-02T15:04:05Z", value)
+	if err != nil || parsed.UTC().Format("2006-01-02T15:04:05Z") != value {
+		return fmt.Errorf("timestamp-invalid")
+	}
+	return nil
+}
+
+func DeriveSigningLocationV1(documentURL, scope string) (string, error) {
+	u, err := whatwgurl.Parse(documentURL)
+	if err != nil || u.Scheme() != "https" || u.Hostname() == "" || u.Username() != "" || u.Password() != "" {
+		return "", fmt.Errorf("origin-not-supported")
+	}
+	switch scope {
+	case "url":
+		return u.Href(true), nil
+	case "origin":
+		return u.Scheme() + "://" + u.Host(), nil
+	default:
+		return "", fmt.Errorf("scope-unsupported")
+	}
+}
+
+// BuildSigningPayloadV1 returns the RFC 8785 bytes fixed by htmltrust-signature-v1.
+func BuildSigningPayloadV1(input SigningProfileV1Input) (string, error) {
+	fields := map[string]string{
+		"contentHash": input.ContentHash, "claimsHash": input.ClaimsHash,
+		"documentURL": input.DocumentURL, "scope": input.Scope, "keyid": input.KeyID,
+		"algorithm": input.Algorithm, "signedAt": input.SignedAt,
+	}
+	for name, value := range fields {
+		if value == "" || strings.TrimSpace(value) != value {
+			return "", fmt.Errorf("signing-object-invalid: %s", name)
+		}
+	}
+	if err := ValidateSignedAtV1(input.SignedAt); err != nil {
+		return "", err
+	}
+	location, err := DeriveSigningLocationV1(input.DocumentURL, input.Scope)
+	if err != nil {
+		return "", err
+	}
+	document := signingObjectV1{
+		Algorithm: input.Algorithm, AttributeProfile: AttributeProfileV1,
+		CanonicalizationProfile: CanonicalizationProfileV1, ClaimsHash: input.ClaimsHash,
+		ContentHash: input.ContentHash, Context: SigningContextV1, KeyID: input.KeyID,
+		Location: location, Profile: SigningProfileV1, Scope: input.Scope,
+		SignedAt: input.SignedAt, URLProfile: URLProfileV1,
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := CanonicalizeJSONDocument(raw)
+	if err != nil {
+		return "", err
+	}
+	return string(canonical), nil
+}
+
+// BuildSignatureBinding returns the legacy 0.2 colon-joined payload.
+// New integrations must use BuildSigningPayloadV1.
 //
 //	{contentHash}:{claimsHash}:{domain}:{signedAt}
 //
@@ -203,4 +306,18 @@ func VerifySignature(message string, signatureB64 string, publicKeyPEM string, a
 	default:
 		return false, fmt.Errorf("VerifySignature: unsupported algorithm %q", algorithm)
 	}
+}
+
+// VerifyResolvedSignature verifies a signature using a resolved key and
+// rejects revoked or expired key material before doing any cryptographic work.
+// VerifySignature is retained as the legacy PEM-only API; callers that obtain
+// keys through a KeyResolver should use this checked form.
+func VerifyResolvedSignature(message, signatureB64 string, key *ResolvedKey, algorithm string) (bool, error) {
+	if key == nil {
+		return false, errors.New("VerifyResolvedSignature: key is required")
+	}
+	if IsKeyRevoked(key) {
+		return false, nil
+	}
+	return VerifySignature(message, signatureB64, key.PublicKeyPEM, algorithm)
 }

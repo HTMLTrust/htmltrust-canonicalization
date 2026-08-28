@@ -43,6 +43,24 @@ export function extractCanonicalText(html: string, options?: NormalizeOptions): 
  * @returns Canonical serialized string ready to be hashed
  */
 export function canonicalizeClaims(claims: Record<string, string>): string;
+export const SIGNING_PROFILE_V1: Readonly<{
+  profile: "htmltrust-signature-v1";
+  canonicalizationProfile: "htmltrust-c14n-v1";
+  attributeProfile: "htmltrust-attrs-v1";
+  urlProfile: "htmltrust-safe-url-v1";
+  context: "https://htmltrust.org/protocol/signed-section";
+}>;
+export function deriveSigningLocationV1(documentURL: string, scope: "url" | "origin"): string;
+export function validateSignedAtV1(value: string): string;
+export function buildSigningPayloadV1(parts: {
+  contentHash: string;
+  claimsHash: string;
+  documentURL: string;
+  scope: "url" | "origin";
+  keyid: string;
+  algorithm: string;
+  signedAt: string;
+}): string;
 
 /** Extract direct child `<meta name content>` claims from a signed-section. */
 export function extractClaimsFromSignedSection(html: string): Record<string, string>;
@@ -138,6 +156,9 @@ export function buildEndorsementBinding(e: Omit<Endorsement, "signature"> & { si
 
 /** Deterministically serialize a JSON value with object keys sorted. */
 export function canonicalizeJson(value: unknown): string;
+
+/** Parse and RFC 8785-canonicalize a complete JSON document strictly. */
+export function canonicalizeJsonDocument(document: string): string;
 
 /** Verify a standalone signed endorsement (spec §2.5). */
 export function verifyEndorsement(

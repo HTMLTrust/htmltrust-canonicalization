@@ -1,0 +1,6 @@
+{
+  "name": "string-escaping",
+  "description": "JCS uses lowercase control escapes, short JSON escapes, and leaves slash unescaped.",
+  "input": "{\"s\":\"\\u20ac$\\u000F\\nA'B\\\"\\\\\\/\"}",
+  "expected": "{\"s\":\"€$\\u000f\\nA'B\\\"\\\\/\"}"
+}

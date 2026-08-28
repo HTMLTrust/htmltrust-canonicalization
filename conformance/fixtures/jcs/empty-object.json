@@ -1,0 +1,6 @@
+{
+  "name": "empty-object",
+  "description": "An empty JSON object remains an object rather than collapsing to a host-language list.",
+  "input": "{}",
+  "expected": "{}"
+}

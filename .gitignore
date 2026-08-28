@@ -6,16 +6,10 @@ Thumbs.db
 node_modules/
 
 # Go
-# go/go.sum is deliberately NOT ignored. It is a checksum file, not a version
-# lock -- the library-doesn't-commit-its-lockfile convention that applies to
-# php/composer.lock and rust/Cargo.lock below does not apply to it. Without a
-# committed go.sum nothing verifies that the module contents CI builds are the
-# same bytes anyone else gets, and `go mod verify` has nothing to check
-# against. Commit go/go.sum alongside go/go.mod.
+# go/go.sum is committed so CI can verify downloaded module contents.
 
 # PHP
 php/vendor/
-php/composer.lock
 
 # Python
 python/.venv/
@@ -29,11 +23,9 @@ __pycache__/
 
 # Rust
 rust/target/
-rust/Cargo.lock
 
 # Conformance suite artifacts
 conformance/runners/run-rust/target/
-conformance/runners/run-rust/Cargo.lock
 
 # IDE
 .idea/

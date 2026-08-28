@@ -14,8 +14,22 @@ from bs4 import BeautifulSoup, Tag
 
 from ._normalize import normalize_text
 
+_MAX_CLAIMS = 64
+_MAX_CLAIM_BYTES = 4 * 1024
 
-def canonicalize_claims(claims: Mapping[str, object]) -> str:
+
+def _claim_field(value: str) -> str:
+    value = normalize_text(value).strip()
+    if len(value.encode("utf-8")) > _MAX_CLAIM_BYTES:
+        raise ValueError("resource-limit-exceeded")
+    return value
+
+
+def _escape_claim(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(":", "\\:").replace("\n", "\\n")
+
+
+def canonicalize_claims(claims: Mapping[str, str]) -> str:
     """Serialize ``claims`` to the canonical, sortable, hashable string form.
 
     Each claim name and value is run through ``normalize_text`` so that
@@ -23,9 +37,7 @@ def canonicalize_claims(claims: Mapping[str, object]) -> str:
     sorted lexically by name and emitted as ``name:content\n`` records.
 
     Args:
-        claims: Mapping of claim name to value. Values are coerced to
-            ``str`` before normalization so callers may pass simple
-            scalar types.
+        claims: Mapping of string claim names to string values.
 
     Returns:
         Canonical serialized string ready to be hashed.
@@ -35,9 +47,13 @@ def canonicalize_claims(claims: Mapping[str, object]) -> str:
 
     entries = []
     seen = set()
+    if len(claims) > _MAX_CLAIMS:
+        raise ValueError("resource-limit-exceeded")
     for name, value in claims.items():
-        normalized_name = normalize_text(name).strip()
-        normalized_value = normalize_text(str(value)).strip()
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise ValueError("claim-malformed")
+        normalized_name = _claim_field(name)
+        normalized_value = _claim_field(value)
         if not normalized_name:
             raise ValueError("claim-malformed")
         if normalized_name in seen:
@@ -45,7 +61,7 @@ def canonicalize_claims(claims: Mapping[str, object]) -> str:
         seen.add(normalized_name)
         entries.append((normalized_name, normalized_value))
     entries.sort(key=lambda nv: nv[0])
-    return "".join(f"{name}:{value}\n" for name, value in entries)
+    return "".join(f"{_escape_claim(name)}:{_escape_claim(value)}\n" for name, value in entries)
 
 
 def extract_claims_from_signed_section(html: str) -> dict[str, str]:
@@ -60,17 +76,38 @@ def extract_claims_from_signed_section(html: str) -> dict[str, str]:
     if not isinstance(html, str):
         raise TypeError("extract_claims_from_signed_section expects a str")
 
-    soup = BeautifulSoup(html, "html.parser")
-    root = soup.find("signed-section") or soup
+    # Run the same source-profile checks as content extraction before using
+    # the recovered HTML5 tree.
+    from ._extract import _preflight_source
+    _preflight_source(html)
+    soup = BeautifulSoup(html, "html5lib")
+    section = soup.find("signed-section")
+    root = section if section is not None else soup
     claims: dict[str, str] = {}
     seen: set[str] = set()
-    for child in getattr(root, "children", ()):
+    children = list(getattr(root, "children", ()))
+    if section is None:
+        # html5lib moves top-level metadata into <head>.  When callers pass
+        # an inner signed-section fragment, those head/html wrappers are
+        # parser scaffolding, so retain only metadata whose intervening
+        # ancestors are html/head/body.
+        children = [
+            elem for elem in soup.find_all("meta")
+            if all(
+                ancestor.name in {"html", "head", "body", "[document]"}
+                for ancestor in elem.parents
+                if ancestor.name is not None
+            )
+        ]
+    for child in children:
         if not isinstance(child, Tag) or child.name.lower() != "meta":
             continue
         if not child.has_attr("name") or not child.has_attr("content"):
             raise ValueError("claim-malformed")
-        name = normalize_text(str(child["name"])).strip()
-        content = normalize_text(str(child["content"])).strip()
+        if len(claims) >= _MAX_CLAIMS:
+            raise ValueError("resource-limit-exceeded")
+        name = _claim_field(str(child["name"]))
+        content = _claim_field(str(child["content"]))
         if not name:
             raise ValueError("claim-malformed")
         if name in seen:

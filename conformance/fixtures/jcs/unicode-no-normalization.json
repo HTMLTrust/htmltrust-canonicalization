@@ -1,0 +1,6 @@
+{
+  "name": "unicode-no-normalization",
+  "description": "JCS preserves composed and decomposed strings as distinct values and keys.",
+  "input": "{\"é\":\"NFC\",\"é\":\"NFD\"}",
+  "expected": "{\"é\":\"NFD\",\"é\":\"NFC\"}"
+}

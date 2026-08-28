@@ -1,0 +1,87 @@
+services:
+  javascript:
+    image: node:22-bookworm
+    working_dir: /workspace
+    command: >-
+      sh -c "npm ci --ignore-scripts --no-audit --no-fund
+      && node javascript/test.js
+      && node conformance/runners/run-javascript.mjs"
+    volumes:
+      - .:/workspace:ro
+      - javascript_modules:/workspace/node_modules
+      - npm_cache:/root/.npm
+
+  go:
+    image: golang:1.25-bookworm
+    working_dir: /workspace
+    command: >-
+      sh -c "cd go
+      && /usr/local/go/bin/go mod download
+      && /usr/local/go/bin/go test ./...
+      && cd ../conformance/runners
+      && /usr/local/go/bin/go run ./run-go.go"
+    environment:
+      GOCACHE: /cache/build
+      GOMODCACHE: /cache/modules
+    volumes:
+      - .:/workspace:ro
+      - go_cache:/cache
+
+  php:
+    build:
+      context: .
+      dockerfile: .docker/php/Dockerfile
+    working_dir: /workspace
+    command: >-
+      sh -c "composer install --working-dir=php --no-interaction --prefer-dist --no-progress
+      && composer test --working-dir=php
+      && php conformance/runners/run-php.php"
+    environment:
+      COMPOSER_CACHE_DIR: /cache/composer
+      COMPOSER_ROOT_VERSION: 0.3.0
+    volumes:
+      - .:/workspace:ro
+      - php_vendor:/workspace/php/vendor
+      - php_cache:/cache
+
+  python:
+    image: python:3.14-bookworm
+    working_dir: /workspace
+    command: >-
+      sh -c "mkdir -p /build/python
+      && cp -a python/. /build/python/
+      && python -m pip install --disable-pip-version-check --upgrade '/build/python[dev]'
+      && python -m pytest -q -p no:cacheprovider python/tests
+      && python tools/gen-test-vectors.py --check
+      && python conformance/runners/run-python.py"
+    environment:
+      PIP_CACHE_DIR: /cache/pip
+      PYTHONPATH: /usr/local/lib/python3.14/site-packages
+    volumes:
+      - .:/workspace:ro
+      - python_cache:/cache
+
+  rust:
+    image: rust:1.86-bookworm
+    working_dir: /workspace
+    command: >-
+      sh -c "cargo test --locked --manifest-path rust/Cargo.toml
+      && cargo test --locked --manifest-path ffi/Cargo.toml
+      && cargo run --locked --quiet --release --manifest-path conformance/runners/run-rust/Cargo.toml"
+    environment:
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cargo-target
+    volumes:
+      - .:/workspace:ro
+      - rust_cache:/cache
+      - ${HTMLTRUST_CARGO_TARGET_MOUNT:-rust_target}:/cargo-target
+
+volumes:
+  javascript_modules:
+  npm_cache:
+  go_cache:
+  php_vendor:
+  php_cache:
+  python_cache:
+  rust_cache:
+  rust_target:

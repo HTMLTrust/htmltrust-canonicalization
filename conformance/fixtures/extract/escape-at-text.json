@@ -1,0 +1,6 @@
+{
+  "name": "escape-at-text",
+  "description": "Literal U+0040 in normalized text is doubled so text cannot emit an attribute record.",
+  "input": "<p>Email @attr:a:href:x and a@b.example</p>",
+  "expected": "Email @@attr:a:href:x and a@@b.example"
+}

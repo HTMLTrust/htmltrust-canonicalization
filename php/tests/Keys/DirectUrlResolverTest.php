@@ -7,6 +7,7 @@ namespace HTMLTrust\Canonicalization\Tests\Keys;
 
 use PHPUnit\Framework\TestCase;
 use HTMLTrust\Canonicalization\Keys\DirectUrlResolver;
+use HTMLTrust\Canonicalization\Keys\HttpFetcher;
 
 class DirectUrlResolverTest extends TestCase
 {
@@ -103,6 +104,16 @@ class DirectUrlResolverTest extends TestCase
         $this->assertNull($resolver->resolve('https://example.com/key.json'));
     }
 
+    public function testRejectsOversizedInjectedResponse(): void
+    {
+        $resolver = new DirectUrlResolver(static function (string $url): ?array {
+            return ['body' => str_repeat('x', 64 * 1024 + 1), 'contentType' => 'application/json'];
+        });
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('resource-limit-exceeded');
+        $resolver->resolve('https://example.com/key.json');
+    }
+
     public function testReturnsNullForUnsupportedScheme(): void
     {
         $fetcher = static function (string $url): ?array {
@@ -128,5 +139,18 @@ class DirectUrlResolverTest extends TestCase
         };
         $resolver = new DirectUrlResolver($fetcher);
         $this->assertNull($resolver->resolve('https://example.com/key.json'));
+    }
+
+    public function testDefaultFetcherCapsFileResponseWhileReading(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'htmltrust-key-');
+        $this->assertNotFalse($path);
+        try {
+            file_put_contents($path, str_repeat('x', 64 * 1024 + 1));
+            $response = (HttpFetcher::default())('file://' . $path);
+            $this->assertNull($response);
+        } finally {
+            @unlink($path);
+        }
     }
 }

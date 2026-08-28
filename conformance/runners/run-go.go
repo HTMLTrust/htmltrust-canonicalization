@@ -43,6 +43,7 @@ type fixture struct {
 	Expected    string          `json:"expected"`
 	BaseURL     string          `json:"baseURL"`
 	Error       string          `json:"error"`
+	Repeat      int             `json:"repeat"`
 }
 
 type result struct {
@@ -61,7 +62,9 @@ func runNormalize(fx *fixture) (string, bool, error) {
 	if err := json.Unmarshal(fx.Input, &s); err != nil {
 		return "", true, fmt.Errorf("input is not a string: %w", err)
 	}
-	return canonicalize.NormalizeText(s), true, nil
+	s = repeatString(s, fx.Repeat)
+	out, err := canonicalize.NormalizeTextChecked(s)
+	return out, true, err
 }
 
 func runExtract(fx *fixture) (string, bool, error) {
@@ -69,6 +72,7 @@ func runExtract(fx *fixture) (string, bool, error) {
 	if err := json.Unmarshal(fx.Input, &s); err != nil {
 		return "", true, fmt.Errorf("input is not a string: %w", err)
 	}
+	s = repeatString(s, fx.Repeat)
 	out, err := canonicalize.ExtractCanonicalText(s, canonicalize.Options{BaseURL: fx.BaseURL})
 	return out, true, err
 }
@@ -76,10 +80,30 @@ func runExtract(fx *fixture) (string, bool, error) {
 func runClaims(fx *fixture) (string, bool, error) {
 	var claims map[string]string
 	if err := json.Unmarshal(fx.Input, &claims); err != nil {
-		return "", true, fmt.Errorf("input is not a string map: %w", err)
+		return "", true, fmt.Errorf("claim-malformed")
+	}
+	for name, value := range claims {
+		claims[name] = repeatString(value, fx.Repeat)
 	}
 	out, err := canonicalize.CanonicalizeClaimsStrict(claims)
 	return out, true, err
+}
+
+func runJCS(fx *fixture) (string, bool, error) {
+	var s string
+	if err := json.Unmarshal(fx.Input, &s); err != nil {
+		return "", true, fmt.Errorf("input is not a JSON document string: %w", err)
+	}
+	s = repeatString(s, fx.Repeat)
+	out, err := canonicalize.CanonicalizeJSONDocument([]byte(s))
+	return string(out), true, err
+}
+
+func repeatString(s string, count int) string {
+	if count <= 1 {
+		return s
+	}
+	return strings.Repeat(s, count)
 }
 
 func main() {
@@ -101,6 +125,7 @@ func main() {
 		"normalize": runNormalize,
 		"extract":   runExtract,
 		"claims":    runClaims,
+		"jcs":       runJCS,
 	}
 
 	var (
@@ -110,7 +135,7 @@ func main() {
 		skipped int
 	)
 
-	for _, suite := range []string{"normalize", "extract", "claims"} {
+	for _, suite := range []string{"normalize", "extract", "claims", "jcs"} {
 		paths, err := listFixtures(filepath.Join(fixturesRoot, suite))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

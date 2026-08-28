@@ -71,6 +71,58 @@ class DidWebResolverTest extends TestCase
         $this->assertSame('https://example.com/user/alice/did.json', $captured['url']);
     }
 
+    public function testPreservesPercentEncodedPathSegments(): void
+    {
+        $captured = ['url' => null];
+        $resolver = new DidWebResolver(static function (string $url) use (&$captured): ?array {
+            $captured['url'] = $url;
+            return [
+                'body' => json_encode(['verificationMethod' => [['publicKeyPem' => 'PEM']]]),
+                'contentType' => 'application/did+json',
+            ];
+        });
+
+        $this->assertNotNull($resolver->resolve('did:web:example.com:foo%2Fbar'));
+        $this->assertSame('https://example.com/foo%2Fbar/did.json', $captured['url']);
+    }
+
+    public function testValidatesAndDecodesEncodedPortAuthority(): void
+    {
+        $captured = ['url' => null];
+        $resolver = new DidWebResolver(static function (string $url) use (&$captured): ?array {
+            $captured['url'] = $url;
+            return [
+                'body' => json_encode(['verificationMethod' => [['publicKeyPem' => 'PEM']]]),
+                'contentType' => 'application/did+json',
+            ];
+        });
+
+        $this->assertNotNull($resolver->resolve('did:web:example.com%3A3000:user'));
+        $this->assertSame('https://example.com:3000/user/did.json', $captured['url']);
+    }
+
+    /** @dataProvider invalidAuthorityProvider */
+    public function testRejectsInvalidAuthority(string $keyid): void
+    {
+        $called = false;
+        $resolver = new DidWebResolver(static function (string $url) use (&$called): ?array {
+            $called = true;
+            return null;
+        });
+
+        $this->assertNull($resolver->resolve($keyid));
+        $this->assertFalse($called);
+    }
+
+    public static function invalidAuthorityProvider(): array
+    {
+        return [
+            'userinfo' => ['did:web:example.com@evil.com'],
+            'nonnumeric port' => ['did:web:example.com%3Aabc'],
+            'unexpected escape' => ['did:web:example%2Ecom'],
+        ];
+    }
+
     public function testIgnoresFragment(): void
     {
         $captured = ['url' => null];
@@ -97,6 +149,16 @@ class DidWebResolverTest extends TestCase
             return null;
         });
         $this->assertNull($resolver->resolve('did:web:example.com'));
+    }
+
+    public function testRejectsOversizedInjectedResponse(): void
+    {
+        $resolver = new DidWebResolver(static function (string $url): ?array {
+            return ['body' => str_repeat('x', 64 * 1024 + 1), 'contentType' => 'application/json'];
+        });
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('resource-limit-exceeded');
+        $resolver->resolve('did:web:example.com');
     }
 
     public function testReturnsNullOnInvalidJson(): void
@@ -138,6 +200,60 @@ class DidWebResolverTest extends TestCase
         $resolved = $resolver->resolve('did:web:example.com');
         $this->assertNotNull($resolved);
         $this->assertSame('A', $resolved->publicKeyPem);
+    }
+
+    public function testSkipsRevokedAndExpiredMethods(): void
+    {
+        $fetcher = static function (string $url): ?array {
+            return [
+                'body' => json_encode([
+                    'verificationMethod' => [
+                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'REVOKED', 'revoked' => true],
+                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'EXPIRED', 'expires' => '2000-01-01T00:00:00Z'],
+                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'LIVE', 'expires' => '2999-01-01T00:00:00Z'],
+                    ],
+                ]),
+                'contentType' => 'application/did+json',
+            ];
+        };
+
+        $resolved = (new DidWebResolver($fetcher))->resolve('did:web:example.com');
+        $this->assertNotNull($resolved);
+        $this->assertSame('LIVE', $resolved->publicKeyPem);
+        $this->assertFalse($resolved->revoked);
+        $this->assertSame('2999-01-01T00:00:00Z', $resolved->expires);
+    }
+
+    public function testDeactivatedDocumentDoesNotResolve(): void
+    {
+        $resolver = new DidWebResolver(static function (string $url): ?array {
+            return [
+                'body' => json_encode([
+                    'deactivated' => true,
+                    'verificationMethod' => [['publicKeyPem' => 'PEM']],
+                ]),
+                'contentType' => 'application/did+json',
+            ];
+        });
+        $this->assertNull($resolver->resolve('did:web:example.com'));
+    }
+
+    public function testMalformedExpiryIsRejectedAndResolverContinues(): void
+    {
+        $resolver = new DidWebResolver(static function (string $url): ?array {
+            return [
+                'body' => json_encode([
+                    'verificationMethod' => [
+                        ['publicKeyPem' => 'BAD', 'expires' => '2026-01-01T00:00:00+00:00'],
+                        ['publicKeyPem' => 'GOOD', 'expires' => '2999-01-01T00:00:00Z'],
+                    ],
+                ]),
+                'contentType' => 'application/did+json',
+            ];
+        });
+        $resolved = $resolver->resolve('did:web:example.com');
+        $this->assertNotNull($resolved);
+        $this->assertSame('GOOD', $resolved->publicKeyPem);
     }
 
     public function testInfersEcdsaFromMethodType(): void

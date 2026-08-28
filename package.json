@@ -1,6 +1,6 @@
 {
   "name": "@htmltrust/canonicalization",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "HTMLTrust canonical text normalization, signature verification, and key resolution for browsers and Node.js",
   "type": "module",
   "main": "javascript/index.js",
@@ -8,6 +8,9 @@
     ".": "./javascript/index.js"
   },
   "types": "javascript/index.d.ts",
+  "engines": {
+    "node": ">=22"
+  },
   "files": [
     "javascript/index.js",
     "javascript/index.d.ts",
@@ -21,5 +24,8 @@
     "content-signing"
   ],
   "author": "Jason Grey <jason@jason-grey.com>",
-  "license": "LicenseRef-PolyForm-Noncommercial-1.0.0"
+  "license": "LicenseRef-PolyForm-Noncommercial-1.0.0",
+  "dependencies": {
+    "parse5": "7.3.0"
+  }
 }

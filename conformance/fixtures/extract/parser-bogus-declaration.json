@@ -1,0 +1,6 @@
+{
+  "name": "parser-bogus-declaration",
+  "description": "A bogus markup declaration is outside the portable parser profile.",
+  "input": "<!foo>x",
+  "error": "parser-profile-unsupported"
+}

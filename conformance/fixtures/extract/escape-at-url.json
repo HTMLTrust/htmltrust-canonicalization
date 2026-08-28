@@ -1,0 +1,6 @@
+{
+  "name": "escape-at-url",
+  "description": "U+0040 is doubled after an HTTPS URL is parsed and serialized.",
+  "input": "<p><a href=\"https://example.org/?email=a@example.org\">x</a></p>",
+  "expected": "@attr:a:href:https://example.org/?email=a@@example.org\nx"
+}

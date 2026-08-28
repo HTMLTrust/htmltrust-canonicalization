@@ -1,0 +1,8 @@
+{
+  "name": "non-string-value-rejected",
+  "description": "Claim maps accept only the string values produced by HTML meta content attributes.",
+  "input": {
+    "count": 42
+  },
+  "error": "claim-malformed"
+}

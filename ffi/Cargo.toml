@@ -1,16 +1,19 @@
 [package]
 name = "htmltrust-canonicalization-ffi"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
-description = "C ABI and WebAssembly bindings that expose the Rust HTMLTrust canonicalization core to other languages, so every binding runs identical code (byte-identical by construction)."
+rust-version = "1.86"
+description = "C ABI and WebAssembly bindings for the Rust HTMLTrust canonicalization implementation."
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/HTMLTrust/htmltrust-canonicalization"
+readme = "README.md"
 
 [lib]
 name = "htmltrust_canonicalization_ffi"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-htmltrust-canonicalization = { path = "../rust" }
+htmltrust-canonicalization = { version = "0.3.0", path = "../rust" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

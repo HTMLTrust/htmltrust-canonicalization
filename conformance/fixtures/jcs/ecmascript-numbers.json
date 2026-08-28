@@ -1,0 +1,6 @@
+{
+  "name": "ecmascript-numbers",
+  "description": "Numbers use ECMAScript serialization at fixed and exponential notation boundaries.",
+  "input": "{\"z\":-0,\"a\":1e30,\"b\":4.50,\"c\":2e-3,\"d\":1e-7,\"e\":1e-6}",
+  "expected": "{\"a\":1e+30,\"b\":4.5,\"c\":0.002,\"d\":1e-7,\"e\":0.000001,\"z\":0}"
+}

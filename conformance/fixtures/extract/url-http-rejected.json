@@ -1,0 +1,6 @@
+{
+  "name": "url-http-rejected",
+  "description": "Cleartext HTTP is outside htmltrust-safe-url-v1.",
+  "input": "<p><a href=\"http://example.org/plain\">x</a></p>",
+  "error": "url-policy-violation"
+}

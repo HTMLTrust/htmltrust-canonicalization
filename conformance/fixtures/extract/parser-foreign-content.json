@@ -1,0 +1,6 @@
+{
+  "name": "parser-foreign-content",
+  "description": "Foreign-content integration points are outside the portable parser profile.",
+  "input": "<signed-section><svg><foreignObject><p>Text</p></foreignObject></svg></signed-section>",
+  "error": "parser-profile-unsupported"
+}

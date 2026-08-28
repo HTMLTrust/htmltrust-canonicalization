@@ -2,9 +2,8 @@
 /**
  * HTMLTrust signature binding, verification, and endorsement helpers.
  *
- * Mirrors the JS reference implementation. See htmltrust spec §2.1, §2.2,
- * §2.5 for the canonical signing payload, keyid resolution, and
- * endorsement formats.
+ * Mirrors the JS reference implementation for the frozen v1 signing payload,
+ * key resolution, signature verification, and endorsement formats.
  *
  * @package HTMLTrust\Canonicalization
  */
@@ -19,8 +18,14 @@ use RuntimeException;
 
 class Signature
 {
+    public const SIGNING_PROFILE_V1 = 'htmltrust-signature-v1';
+    public const CANONICALIZATION_PROFILE_V1 = 'htmltrust-c14n-v1';
+    public const ATTRIBUTE_PROFILE_V1 = 'htmltrust-attrs-v1';
+    public const URL_PROFILE_V1 = 'htmltrust-safe-url-v1';
+    public const SIGNING_CONTEXT_V1 = 'https://htmltrust.org/protocol/signed-section';
+
     /**
-     * Build the canonical signing-binding string per spec §2.1:
+     * Build the legacy 0.2 signing-binding string:
      *
      *     {content-hash}:{claims-hash}:{domain}:{signed-at}
      *
@@ -28,6 +33,7 @@ class Signature
      * raises InvalidArgumentException to surface programmer errors early.
      *
      * @throws InvalidArgumentException
+     * @deprecated New integrations must use buildSigningPayloadV1().
      */
     public static function buildSignatureBinding(
         string $contentHash,
@@ -50,6 +56,109 @@ class Signature
         }
 
         return $contentHash . ':' . $claimsHash . ':' . $domain . ':' . $signedAt;
+    }
+
+    /**
+     * Derive the canonical location fixed by htmltrust-signature-v1.
+     *
+     * URL scope retains the path and query after WHATWG serialization and
+     * removes the fragment. Origin scope returns scheme://host[:port].
+     *
+     * @throws InvalidArgumentException
+     */
+    public static function deriveSigningLocationV1(string $documentUrl, string $scope): string
+    {
+        $url = \Uri\WhatWg\Url::parse($documentUrl);
+        if ($url === null
+            || strtolower((string) $url->getScheme()) !== 'https'
+            || $url->getAsciiHost() === null
+            || $url->getAsciiHost() === ''
+            || $url->getUsername() !== null
+            || $url->getPassword() !== null) {
+            throw new InvalidArgumentException('origin-not-supported');
+        }
+
+        // Fragments are outside the signed URL scope. All other URL components
+        // use the WHATWG serializer, matching the JavaScript binding.
+        $withoutFragment = $url->withFragment(null)->toAsciiString();
+        if ($scope === 'url') {
+            return $withoutFragment;
+        }
+        if ($scope !== 'origin') {
+            throw new InvalidArgumentException('scope-unsupported');
+        }
+
+        $originUrl = $url->withPath('/')->withQuery(null)->withFragment(null);
+        return rtrim($originUrl->toAsciiString(), '/');
+    }
+
+    /** Validate the exact UTC timestamp form fixed by v1. */
+    public static function validateSignedAtV1(string $value): string
+    {
+        if (preg_match('/^(?!0000)\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$/D', $value) !== 1) {
+            throw new InvalidArgumentException('timestamp-invalid');
+        }
+        $parsed = \DateTimeImmutable::createFromFormat(
+            '!Y-m-d\\TH:i:s\\Z',
+            $value,
+            new \DateTimeZone('UTC')
+        );
+        if ($parsed === false || $parsed->format('Y-m-d\\TH:i:s\\Z') !== $value) {
+            throw new InvalidArgumentException('timestamp-invalid');
+        }
+        return $value;
+    }
+
+    /**
+     * Build the RFC 8785 signing payload fixed by htmltrust-signature-v1.
+     *
+     * @param array<string, string> $parts
+     * @throws InvalidArgumentException
+     */
+    public static function buildSigningPayloadV1(array $parts): string
+    {
+        $required = [
+            'contentHash',
+            'claimsHash',
+            'documentURL',
+            'scope',
+            'keyid',
+            'algorithm',
+            'signedAt',
+        ];
+        foreach ($required as $name) {
+            if (!array_key_exists($name, $parts)
+                || !is_string($parts[$name])
+                || $parts[$name] === ''
+                || trim($parts[$name]) !== $parts[$name]) {
+                throw new InvalidArgumentException('signing-object-invalid: ' . $name);
+            }
+        }
+
+        self::validateSignedAtV1($parts['signedAt']);
+        $document = [
+            'algorithm' => $parts['algorithm'],
+            'attributeProfile' => self::ATTRIBUTE_PROFILE_V1,
+            'canonicalizationProfile' => self::CANONICALIZATION_PROFILE_V1,
+            'claimsHash' => $parts['claimsHash'],
+            'contentHash' => $parts['contentHash'],
+            'context' => self::SIGNING_CONTEXT_V1,
+            'keyid' => $parts['keyid'],
+            'location' => self::deriveSigningLocationV1($parts['documentURL'], $parts['scope']),
+            'profile' => self::SIGNING_PROFILE_V1,
+            'scope' => $parts['scope'],
+            'signedAt' => $parts['signedAt'],
+            'urlProfile' => self::URL_PROFILE_V1,
+        ];
+        try {
+            $encoded = json_encode(
+                $document,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+            );
+        } catch (\JsonException $e) {
+            throw new InvalidArgumentException('signing-object-invalid', 0, $e);
+        }
+        return Canonicalize::canonicalizeJsonDocument($encoded);
     }
 
     /**
@@ -104,24 +213,68 @@ class Signature
         if ($timestamp === null || $timestamp === '') {
             throw new InvalidArgumentException('timestamp must be non-empty');
         }
-        return self::canonicalJson([
-            'endorsement' => $endorsement,
-            'timestamp' => $timestamp,
-        ]);
+        try {
+            $document = json_encode([
+                'endorsement' => $endorsement,
+                'timestamp' => $timestamp,
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (\JsonException $e) {
+            throw new InvalidArgumentException('endorsement is not valid UTF-8', 0, $e);
+        }
+        return Canonicalize::canonicalizeJsonDocument($document);
     }
 
     /**
-     * @param array<string, mixed> $endorsement
+     * Canonicalize one endorsement object using strict RFC 8785 rules.
+     *
+     * The array form is retained for the original PHP API. Passing raw JSON
+     * is also supported so duplicate object members can be rejected before
+     * PHP materializes an object and silently overwrites one of them.
+     * `signature` is excluded from the signed object, while every other
+     * extension member remains part of the binding.
+     *
+     * @param array<string, mixed>|string $endorsement
      */
-    public static function canonicalizeEndorsementDocument(array $endorsement): string
+    public static function canonicalizeEndorsementDocument($endorsement): string
     {
-        unset($endorsement['signature']);
+        if (is_string($endorsement)) {
+            // Validate the raw syntax, duplicate names, Unicode scalars, and
+            // JCS number range before decoding into a PHP object.
+            Canonicalize::canonicalizeJsonDocument($endorsement);
+            try {
+                $endorsement = json_decode($endorsement, false, 512, JSON_THROW_ON_ERROR);
+            } catch (\JsonException $e) {
+                throw new InvalidArgumentException('endorsement is not valid JSON', 0, $e);
+            }
+            if (!is_object($endorsement)) {
+                throw new InvalidArgumentException('endorsement must be an object');
+            }
+            unset($endorsement->signature);
+            $document = $endorsement;
+        } elseif (is_array($endorsement)) {
+            unset($endorsement['signature']);
+            $document = $endorsement;
+        } else {
+            throw new InvalidArgumentException('endorsement must be an object');
+        }
+
         foreach (['endorser', 'endorsement', 'algorithm', 'timestamp'] as $required) {
-            if (!isset($endorsement[$required]) || !is_string($endorsement[$required]) || $endorsement[$required] === '') {
+            $present = is_object($document) ? property_exists($document, $required) : array_key_exists($required, $document);
+            $value = is_object($document) ? ($document->{$required} ?? null) : ($document[$required] ?? null);
+            if (!$present || !is_string($value) || $value === '') {
                 throw new InvalidArgumentException("endorsement {$required} must be non-empty");
             }
         }
-        return self::canonicalJson($endorsement);
+
+        try {
+            $encoded = json_encode(
+                $document,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+            );
+        } catch (\JsonException $e) {
+            throw new InvalidArgumentException('endorsement is not valid JSON', 0, $e);
+        }
+        return Canonicalize::canonicalizeJsonDocument($encoded);
     }
 
     /**
@@ -133,6 +286,7 @@ class Signature
      *                The 32-byte raw key is extracted from the PEM body.
      *   - "ecdsa":   uses openssl_verify with OPENSSL_ALGO_SHA256.
      *   - "rsa":     uses openssl_verify with OPENSSL_ALGO_SHA256.
+     *   - "rsa-pss-sha256": RSA-PSS with SHA-256 and a 32-byte salt.
      *
      * The signature must be canonical unpadded standard Base64.
      *
@@ -171,6 +325,9 @@ class Signature
             case 'rsa-pkcs1-sha256':
                 return self::verifyOpenssl($message, $signature, $publicKeyPem, OPENSSL_ALGO_SHA256, OPENSSL_KEYTYPE_RSA);
 
+            case 'rsa-pss-sha256':
+                return self::verifyRsaPssSha256($message, $signature, $publicKeyPem);
+
             default:
                 throw new InvalidArgumentException("unsupported signature algorithm: {$algorithm}");
         }
@@ -199,6 +356,9 @@ class Signature
                 return false;
             }
         }
+        if (!self::endorsementLifecycleIsValid($endorsement)) {
+            return false;
+        }
 
         $endorser   = $endorsement['endorser'];
         $signature  = $endorsement['signature'];
@@ -206,6 +366,10 @@ class Signature
 
         $resolved = KeyResolution::resolveKey($endorser, $resolvers);
         if ($resolved === null) {
+            return false;
+        }
+
+        if ($resolved->isRevoked()) {
             return false;
         }
 
@@ -224,6 +388,37 @@ class Signature
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
+
+    /** Optional endorsement lifecycle fields fail closed when malformed. */
+    private static function endorsementLifecycleIsValid(array $endorsement): bool
+    {
+        if (array_key_exists('revokedBy', $endorsement)) return false;
+        if (!array_key_exists('expires', $endorsement)) return true;
+        if (!is_string($endorsement['expires']) || $endorsement['expires'] === '') return false;
+        $expiry = self::parseStrictLifecycleExpiry($endorsement['expires']);
+        if ($expiry === null) return false;
+        return $expiry > new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+    }
+
+    private static function parseStrictLifecycleExpiry(string $value): ?\DateTimeImmutable
+    {
+        if (preg_match(
+            '/^((?!0000)\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d)(?:\.\d+)?Z$/D',
+            $value,
+            $parts
+        ) !== 1) {
+            return null;
+        }
+        try {
+            $expiry = new \DateTimeImmutable($value, new \DateTimeZone('UTC'));
+        } catch (\Exception $e) {
+            return null;
+        }
+        if ($expiry->format('Y-m-d\TH:i:s') !== $parts[1]) {
+            return null;
+        }
+        return $expiry;
+    }
 
     /**
      * Decode canonical unpadded standard Base64. Returns null on malformed or
@@ -254,47 +449,6 @@ class Signature
             return null;
         }
         return $decoded;
-    }
-
-    /**
-     * @param mixed $value
-     */
-    private static function canonicalJson($value): string
-    {
-        if (is_array($value)) {
-            if ($value === [] || array_keys($value) === range(0, count($value) - 1)) {
-                $items = array_map([self::class, 'canonicalJson'], $value);
-                return '[' . implode(',', $items) . ']';
-            }
-            uksort($value, static function ($left, $right): int {
-                return strcmp(
-                    mb_convert_encoding((string) $left, 'UTF-16BE', 'UTF-8'),
-                    mb_convert_encoding((string) $right, 'UTF-16BE', 'UTF-8')
-                );
-            });
-            $items = [];
-            foreach ($value as $key => $item) {
-                if ($item === null) {
-                    $items[] = json_encode((string) $key, JSON_UNESCAPED_SLASHES) . ':null';
-                } else {
-                    $items[] = json_encode((string) $key, JSON_UNESCAPED_SLASHES) . ':' . self::canonicalJson($item);
-                }
-            }
-            return '{' . implode(',', $items) . '}';
-        }
-        if (is_string($value)) {
-            return json_encode($value, JSON_UNESCAPED_SLASHES);
-        }
-        if (is_int($value) || is_float($value)) {
-            return json_encode($value, JSON_UNESCAPED_SLASHES);
-        }
-        if (is_bool($value)) {
-            return $value ? 'true' : 'false';
-        }
-        if ($value === null) {
-            return 'null';
-        }
-        throw new InvalidArgumentException('unsupported JSON value');
     }
 
     /**
@@ -341,28 +495,29 @@ class Signature
             return $publicKey;
         }
 
-        // PEM path.
-        if (strpos($publicKey, '-----BEGIN') !== false) {
-            // Strip header/footer and whitespace, then base64-decode.
-            $body = preg_replace('/-----BEGIN [^-]+-----|-----END [^-]+-----|\s+/', '', $publicKey);
-            if ($body === null || $body === '') {
-                return null;
-            }
-            $der = base64_decode($body, true);
-            if ($der === false) {
-                return null;
-            }
-            // The Ed25519 SubjectPublicKeyInfo DER is 44 bytes; the raw key
-            // is the trailing 32 bytes regardless of header length, since the
-            // BIT STRING contents come last in the SPKI structure.
-            $len = strlen($der);
-            if ($len < SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES) {
-                return null;
-            }
-            return substr($der, $len - SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES);
+        // PEM path. Ed25519 SPKI has one exact DER shape: the 12-byte
+        // SubjectPublicKeyInfo prefix followed by the 32-byte key. Requiring
+        // the complete structure prevents an unrelated key or arbitrary
+        // trailing DER bytes from being accepted as an Ed25519 key.
+        if (preg_match(
+            '/\A-----BEGIN PUBLIC KEY-----\s*(.*?)\s*-----END PUBLIC KEY-----\s*\z/s',
+            $publicKey,
+            $matches
+        ) !== 1) {
+            return null;
         }
+        $body = preg_replace('/\s+/', '', $matches[1]);
+        if (!is_string($body) || $body === '') {
+            return null;
+        }
+        $der = base64_decode($body, true);
+        $prefix = "\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00";
+        if ($der === false || strlen($der) !== strlen($prefix) + SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES
+            || substr($der, 0, strlen($prefix)) !== $prefix) {
+            return null;
+        }
+        return substr($der, strlen($prefix));
 
-        return null;
     }
 
     /**
@@ -400,6 +555,90 @@ class Signature
         }
 
         return $result === 1;
+    }
+
+    /**
+     * Verify RSA-PSS(SHA-256, saltLength=32), matching the JS and Go
+     * implementations. PHP's openssl_verify() does not expose PSS padding
+     * options, so recover the EMSA-PSS encoded message with the RSA public
+     * operation and verify EMSA-PSS-VERIFY (RFC 8017 §9.1.2) directly.
+     */
+    private static function verifyRsaPssSha256(string $message, string $signature, string $publicKeyPem): bool
+    {
+        if (!function_exists('openssl_public_decrypt') || !function_exists('openssl_pkey_get_public')) {
+            throw new RuntimeException('ext-openssl is required for rsa verification');
+        }
+
+        $key = openssl_pkey_get_public($publicKeyPem);
+        if ($key === false) {
+            return false;
+        }
+        $details = openssl_pkey_get_details($key);
+        // OpenSSL 3 exposes RSA-PSS-restricted keys as type -1. Reject those
+        // here because this implementation cannot inspect their PSS parameter
+        // restrictions before applying the fixed SHA-256/MGF1/salt policy.
+        if (!is_array($details) || ($details['type'] ?? null) !== OPENSSL_KEYTYPE_RSA) {
+            return false;
+        }
+        $bits = (int) ($details['bits'] ?? 0);
+        if ($bits < 512 || strlen($signature) !== (int) ceil($bits / 8)) {
+            return false;
+        }
+
+        $encoded = '';
+        // NO_PADDING asks OpenSSL for the raw RSA public-operation result.
+        if (@openssl_public_decrypt($signature, $encoded, $key, OPENSSL_NO_PADDING) !== true) {
+            return false;
+        }
+
+        $emBits = $bits - 1;
+        $emLen = (int) ceil($emBits / 8);
+        // RSA operations return k octets. For a modulus whose bit length is
+        // not byte-aligned, EMSA-PSS uses k-1 octets and the leading zero is
+        // omitted from the encoded message.
+        if (strlen($encoded) === $emLen + 1 && $encoded[0] === "\0") {
+            $encoded = substr($encoded, 1);
+        }
+        if (strlen($encoded) !== $emLen || $emLen < 32 + 32 + 2) {
+            return false;
+        }
+
+        $hLen = 32;
+        $saltLen = 32;
+        if (substr($encoded, -1) !== "\xbc") {
+            return false;
+        }
+        $maskedDbLen = $emLen - $hLen - 1;
+        $maskedDb = substr($encoded, 0, $maskedDbLen);
+        $hash = substr($encoded, $maskedDbLen, $hLen);
+        $unusedBits = 8 * $emLen - $emBits;
+        if ($unusedBits > 0 && (ord($maskedDb[0]) & (0xff << (8 - $unusedBits))) !== 0) {
+            return false;
+        }
+
+        $dbMask = self::mgf1Sha256($hash, $maskedDbLen);
+        $db = $maskedDb ^ $dbMask;
+        if ($unusedBits > 0) {
+            $db[0] = chr(ord($db[0]) & (0xff >> $unusedBits));
+        }
+        $paddingLength = $emLen - $hLen - $saltLen - 2;
+        if (substr($db, 0, $paddingLength) !== str_repeat("\0", $paddingLength)
+            || ($db[$paddingLength] ?? '') !== "\x01") {
+            return false;
+        }
+        $salt = substr($db, -$saltLen);
+        $messageHash = hash('sha256', $message, true);
+        $expectedHash = hash('sha256', str_repeat("\0", 8) . $messageHash . $salt, true);
+        return hash_equals($expectedHash, $hash);
+    }
+
+    private static function mgf1Sha256(string $seed, int $length): string
+    {
+        $mask = '';
+        for ($counter = 0; strlen($mask) < $length; $counter++) {
+            $mask .= hash('sha256', $seed . pack('N', $counter), true);
+        }
+        return substr($mask, 0, $length);
     }
 
     private static function verifyEcdsaP1363(

@@ -1,0 +1,6 @@
+{
+  "name": "parser-well-formed",
+  "description": "Simple portable-profile HTML is accepted.",
+  "input": "<signed-section><p>Simple text</p></signed-section>",
+  "expected": "Simple text"
+}

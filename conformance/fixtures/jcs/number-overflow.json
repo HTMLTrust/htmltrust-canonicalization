@@ -1,0 +1,6 @@
+{
+  "name": "number-overflow",
+  "description": "A number that overflows IEEE-754 binary64 is rejected.",
+  "input": "{\"n\":1e400}",
+  "error": "jcs-number"
+}

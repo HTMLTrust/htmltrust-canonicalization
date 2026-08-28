@@ -74,6 +74,13 @@ def test_normalize_text_rejects_non_string():
         normalize_text(123)  # type: ignore[arg-type]
 
 
+def test_normalize_text_enforces_input_and_output_limits():
+    with pytest.raises(ValueError, match="resource-limit-exceeded"):
+        normalize_text("a" * 1_048_577)
+    with pytest.raises(ValueError, match="resource-limit-exceeded"):
+        normalize_text("…" * 349_526)
+
+
 def test_zwj_preserved_emoji():
     """Family ZWJ sequence must survive normalization."""
     family = "\U0001F468‍\U0001F469‍\U0001F467"

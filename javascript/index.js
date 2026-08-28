@@ -2,10 +2,29 @@
  * HTMLTrust Canonical Text Normalization
  * Spec: https://github.com/HTMLTrust/htmltrust-canonicalization
  *
- * Zero dependencies. Works in browsers and Node.js.
+ * Uses parse5 for deterministic HTML parsing. Works in browsers and Node.js.
  */
 
 import { NAMED_ENTITIES } from "./entities.js";
+import * as parse5 from "parse5";
+
+const MAX_RESOURCE_BYTES = 1024 * 1024;
+const MAX_CLAIMS = 64;
+const MAX_CLAIM_FIELD_BYTES = 4096;
+const MAX_ELEMENT_DEPTH = 256;
+const MAX_JCS_DEPTH = 256;
+const MAX_REMOTE_KEY_BYTES = 64 * 1024;
+
+function utf8Length(value) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function checkResourceBytes(value, what) {
+  if (utf8Length(value) > MAX_RESOURCE_BYTES) {
+    throw new Error("resource-limit-exceeded");
+  }
+  return value;
+}
 
 // Phase 6: Invisible/formatting characters to strip
 const STRIP_RE = new RegExp(
@@ -68,6 +87,8 @@ const ELLIPSIS_RE = /\u2026/g;
  * @returns {string} Normalized text
  */
 export function normalizeText(text, options = {}) {
+  if (typeof text !== "string") throw new TypeError("normalizeText expects a string");
+  checkResourceBytes(text, "source");
   const { preserveWhitespace = false } = options;
 
   // Phase 1: Unicode NFKC normalization
@@ -98,6 +119,8 @@ export function normalizeText(text, options = {}) {
   // Phase 5: Other punctuation
   text = text.replace(ELLIPSIS_RE, "...");
 
+  checkResourceBytes(text, "output");
+
   return text;
 }
 
@@ -122,8 +145,8 @@ const BLOCK_ELEMENTS =
 
 // Any remaining HTML tag (inline elements we strip without adding whitespace).
 const ANY_TAG_RE = /<\/?[a-z][a-z0-9-]*\b[^>]*>/gi;
-const HTML_TOKEN_RE = /<!--[\s\S]*?-->|<![^>]*>|<\/?[a-z][a-z0-9-]*(?:\s[^<>]*)?\s*\/?>/gi;
-const TAG_NAME_RE = /^<\/?\s*([a-z][a-z0-9-]*)/i;
+const HTML_TOKEN_RE = /<!--[\s\S]*?-->|<![^>]*>|<\/?[a-z][^\t\n\f\r \/>]*(?:[\t\n\f\r ]+(?:[^>"']+|"[^"]*"|'[^']*')*)?\s*\/?>/gi;
+const TAG_NAME_RE = /^<\/?\s*([a-z][^\t\n\f\r \/>]*)/i;
 const SIGNED_ATTRS = ["href", "src", "alt", "aria-label"];
 const VOID_TAGS = new Set([
   "area",
@@ -182,7 +205,7 @@ function decodeEntities(text) {
 }
 function parseAttributes(tag) {
   const attrs = new Map();
-  const body = tag.replace(/^<\/?\s*[a-z][a-z0-9-]*/i, "").replace(/\/?\s*>$/, "");
+  const body = tag.replace(/^<\/?\s*[a-z][^\t\n\f\r \/>]*/i, "").replace(/\/?\s*>$/, "");
   const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
   let match;
   while ((match = attrRe.exec(body))) {
@@ -203,28 +226,34 @@ function appendAttributeRecords(parts, elementName, attrs, baseUrl) {
     if (!attrs.has(attrName)) continue;
     let value = attrs.get(attrName);
     if (attrName === "href" || attrName === "src") {
-      if (!baseUrl && !/^[a-z][a-z0-9+.-]*:/i.test(value)) {
-        // Relative URL with no base cannot be resolved. The draft (§4.3.2)
-        // requires a hard failure rather than a silent skip.
-        throw new Error(
-          `attribute-canonicalization-failed: ${elementName}.${attrName}`,
-        );
-      }
-      try {
-        // `null` base coerces to the invalid string "null"; pass undefined so
-        // an absolute URL is accepted without a base.
-        value = new URL(value, baseUrl || undefined).href;
-      } catch (err) {
-        throw new Error(`attribute-canonicalization-failed: ${elementName}.${attrName}`);
-      }
+      value = normalizeSafeURL(value, baseUrl, elementName, attrName);
     } else {
       value = normalizeText(value).trim();
     }
+    value = value.replaceAll("@", "@@");
     if (value.includes("\n")) {
       throw new Error(`attribute-canonicalization-failed: ${elementName}.${attrName}`);
     }
     const prefix = parts.length && !/[\s\n]$/.test(parts[parts.length - 1]) ? "\n" : "";
     parts.push(`${prefix}@attr:${elementName}:${attrName}:${value}\n`);
+  }
+}
+
+function normalizeSafeURL(value, baseUrl, elementName, attrName) {
+  // Inspect the parser-decoded value before WHATWG URL preprocessing. URL()
+  // otherwise silently strips tabs and line feeds.
+  if (/[\u0000-\u001F\u007F]/u.test(value)) {
+    throw new Error("url-policy-violation");
+  }
+  try {
+    const url = new URL(value, baseUrl || undefined);
+    if (url.protocol !== "https:" || url.username || url.password) {
+      throw new Error("url-policy-violation");
+    }
+    return url.href;
+  } catch (error) {
+    if (error?.message === "url-policy-violation") throw error;
+    throw new Error(`attribute-canonicalization-failed: ${elementName}.${attrName}`);
   }
 }
 
@@ -268,51 +297,137 @@ export function extractCanonicalText(html, options = {}) {
   if (typeof html !== "string") {
     throw new TypeError("extractCanonicalText expects a string");
   }
-
+  checkResourceBytes(html, "source");
+  const fragment = parseHTMLFragment(html);
+  const baseUrl = validateBaseURL(options.baseUrl);
   const parts = [];
-  const baseUrl = options.baseUrl;
-  let index = 0;
-  let excludedDepth = 0;
-  let match;
-  HTML_TOKEN_RE.lastIndex = 0;
-  while ((match = HTML_TOKEN_RE.exec(html))) {
-    if (match.index > index && excludedDepth === 0) {
-      appendPart(parts, normalizeText(decodeEntities(html.slice(index, match.index)), options));
-    }
-    index = HTML_TOKEN_RE.lastIndex;
+  walkParsedNode(fragment, parts, baseUrl, options);
+  const result = finalizeCanonicalParts(parts);
+  checkResourceBytes(result, "output");
+  return result;
+}
 
+function parseHTMLFragment(html) {
+  validatePortableSource(html);
+  const errors = [];
+  const fragment = parse5.parseFragment(html, {
+    sourceCodeLocationInfo: true,
+    onParseError(error) { errors.push(error); },
+  });
+  if (errors.length) throw new Error("parser-profile-unsupported");
+  return fragment;
+}
+
+function validatePortableSource(source) {
+  // parse5 recovers misnesting and foster parenting without emitting a parse
+  // diagnostic, so these source-level checks complement its tokenizer.
+  const stack = [];
+  let index = 0;
+  for (const match of source.matchAll(HTML_TOKEN_RE)) {
+    const text = source.slice(index, match.index);
+    // script, style, and iframe are raw-text/escapable-raw-text elements.
+    // Their bodies are excluded from canonical content, so references there
+    // must not affect the portable-profile validation of the surrounding
+    // document.
+    if (!isRawTextElement(stack.at(-1))) validatePortableReferences(text);
+    if (stack.at(-1) === "table" && text.trim()) throw new Error("parser-profile-unsupported");
+    index = match.index + match[0].length;
     const token = match[0];
+    if (token.startsWith("<!--")) {
+      // HTML comments cannot contain a double hyphen, including one hidden
+      // in the comment body before the closing delimiter.
+      const comment = token.slice(4, -3);
+      if (!isRawTextElement(stack.at(-1)) && (comment.includes("--") || comment.endsWith("-"))) {
+        throw new Error("parser-profile-unsupported");
+      }
+      continue;
+    }
     const nameMatch = TAG_NAME_RE.exec(token);
     if (!nameMatch) continue;
     const name = nameMatch[1].toLowerCase();
-    const closing = /^<\//.test(token);
-    const selfClosing = /\/\s*>$/.test(token) || VOID_TAGS.has(name);
-    const excluded = EXCLUDED_TAGS.has(name);
-
-    if (closing) {
-      if (excluded && excludedDepth > 0) {
-        excludedDepth--;
-        continue;
-      }
-      if (excludedDepth > 0) continue;
-      if (new RegExp(`^(${BLOCK_ELEMENTS})$`, "i").test(name)) appendPart(parts, "\n");
+    if (isRawTextElement(stack.at(-1)) && !(token.startsWith("</") && name === stack.at(-1))) continue;
+    validatePortableReferences(token);
+    if (name === "svg" || name === "math" || name === "foreignobject") throw new Error("parser-profile-unsupported");
+    if (/^<\//.test(token)) {
+      if (stack.at(-1) !== name) throw new Error("parser-profile-unsupported");
+      stack.pop();
       continue;
     }
+    const attrs = parseAttributesWithDuplicateCheck(token);
+    if (!VOID_TAGS.has(name) && !/\/\s*>$/.test(token)) {
+      stack.push(name);
+      if (stack.length > MAX_ELEMENT_DEPTH) throw new Error("resource-limit-exceeded");
+    }
+    void attrs;
+  }
+  const trailing = source.slice(index);
+  if (!isRawTextElement(stack.at(-1))) validatePortableReferences(trailing);
+  if (stack.at(-1) === "table" && trailing.trim()) throw new Error("parser-profile-unsupported");
+  if (stack.length) throw new Error("parser-profile-unsupported");
+}
 
-    if (excluded) {
-      if (!selfClosing) excludedDepth++;
+function isRawTextElement(name) {
+  return name === "script" || name === "style" || name === "iframe";
+}
+
+function validatePortableReferences(source) {
+  for (const match of source.matchAll(/&[A-Za-z][A-Za-z0-9]*;/g)) {
+    if (!Object.hasOwn(NAMED_ENTITIES, match[0])) throw new Error("parser-profile-unsupported");
+  }
+  if (/&[A-Za-z][A-Za-z0-9]*(?:$|[^A-Za-z0-9;])/u.test(source)) {
+    throw new Error("parser-profile-unsupported");
+  }
+}
+
+function parseAttributesWithDuplicateCheck(tag) {
+  const attrs = new Set();
+  const body = tag.replace(/^<\/?\s*[a-z][^\t\n\f\r \/>]*/i, "").replace(/\/?\s*>$/, "");
+  const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+  for (const match of body.matchAll(attrRe)) {
+    const name = match[1].toLowerCase();
+    if (attrs.has(name)) throw new Error("parser-profile-unsupported");
+    attrs.add(name);
+  }
+  return attrs;
+}
+
+function validateBaseURL(raw) {
+  if (raw == null || raw === "") return undefined;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("attribute-canonicalization-failed");
+  }
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new Error("url-policy-violation");
+  }
+  return url.href;
+}
+
+function parsedAttributes(node) {
+  const attrs = new Map();
+  for (const attr of node.attrs || []) attrs.set(attr.name.toLowerCase(), attr.value);
+  return attrs;
+}
+
+function walkParsedNode(node, parts, baseUrl, options) {
+  for (const child of node.childNodes || []) {
+    if (child.nodeName === "#text") {
+      appendPart(parts, normalizeText(child.value, options).replaceAll("@", "@@"));
       continue;
     }
-    if (excludedDepth > 0) continue;
-
-    appendAttributeRecords(parts, name, parseAttributes(token), baseUrl);
-    if (name === "br") appendPart(parts, "\n");
-    if (selfClosing && new RegExp(`^(${BLOCK_ELEMENTS})$`, "i").test(name)) appendPart(parts, "\n");
+    if (child.nodeName === "#comment" || child.nodeName === "#documentType") continue;
+    const name = String(child.tagName || child.nodeName || "").toLowerCase();
+    if (!name || EXCLUDED_TAGS.has(name)) continue;
+    appendAttributeRecords(parts, name, parsedAttributes(child), baseUrl);
+    if (name === "br") {
+      appendPart(parts, "\n");
+    } else {
+      walkParsedNode(child, parts, baseUrl, options);
+      if (new RegExp(`^(${BLOCK_ELEMENTS}|signed-section)$`, "i").test(name)) appendPart(parts, "\n");
+    }
   }
-  if (index < html.length && excludedDepth === 0) {
-    appendPart(parts, normalizeText(decodeEntities(html.slice(index)), options));
-  }
-  return finalizeCanonicalParts(parts);
 }
 
 /**
@@ -342,12 +457,18 @@ function compareByCodePoint(a, b) {
 }
 
 export function canonicalizeClaims(claims) {
+  if (!claims || typeof claims !== "object" || Array.isArray(claims)) throw new TypeError("canonicalizeClaims expects an object");
+  if (Object.keys(claims).length > MAX_CLAIMS) throw new Error("resource-limit-exceeded");
   const seen = new Set();
   const entries = Object.entries(claims)
-    .map(([name, value]) => [normalizeText(name).trim(), normalizeText(String(value)).trim()])
+    .map(([name, value]) => {
+      if (typeof value !== "string") throw new Error("claim-malformed");
+      return [normalizeText(name).trim(), normalizeText(value).trim()];
+    })
     .map(([name, value]) => {
       if (!name) throw new Error("claim-malformed");
       if (seen.has(name)) throw new Error(`claim-duplicate: ${name}`);
+      if (utf8Length(name) > MAX_CLAIM_FIELD_BYTES || utf8Length(value) > MAX_CLAIM_FIELD_BYTES) throw new Error("resource-limit-exceeded");
       seen.add(name);
       return [name, value];
     })
@@ -355,7 +476,10 @@ export function canonicalizeClaims(claims) {
     // UTF-16 code-unit comparison, so astral/high-BMP names order identically
     // to the other bindings (draft §4.6).
     .sort(([a], [b]) => compareByCodePoint(a, b));
-  return entries.map(([name, value]) => `${name}:${value}\n`).join("");
+  const escape = (value) => value.replaceAll("\\", "\\\\").replaceAll(":", "\\:").replaceAll("\n", "\\n");
+  const result = entries.map(([name, value]) => `${escape(name)}:${escape(value)}\n`).join("");
+  checkResourceBytes(result, "output");
+  return result;
 }
 
 /**
@@ -371,47 +495,26 @@ export function extractClaimsFromSignedSection(html) {
     throw new TypeError("extractClaimsFromSignedSection expects a string");
   }
 
-  let depth = 0;
-  let inSignedSection = !/<signed-section\b/i.test(html);
+  checkResourceBytes(html, "source");
+  const fragment = parseHTMLFragment(html);
+  let section = fragment;
+  for (const node of fragment.childNodes || []) {
+    if (node.tagName?.toLowerCase() === "signed-section") { section = node; break; }
+  }
   const claims = {};
   const seen = new Set();
-  HTML_TOKEN_RE.lastIndex = 0;
-  let match;
-  while ((match = HTML_TOKEN_RE.exec(html))) {
-    const token = match[0];
-    const nameMatch = TAG_NAME_RE.exec(token);
-    if (!nameMatch) continue;
-    const name = nameMatch[1].toLowerCase();
-    const closing = /^<\//.test(token);
-    const selfClosing = /\/\s*>$/.test(token) || VOID_TAGS.has(name);
-
-    if (!inSignedSection) {
-      if (!closing && name === "signed-section") {
-        inSignedSection = true;
-        depth = 0;
-      }
-      continue;
-    }
-
-    if (closing) {
-      if (name === "signed-section" && depth === 0) break;
-      if (depth > 0) depth--;
-      continue;
-    }
-
-    if (depth === 0 && name === "meta") {
-      const attrs = parseAttributes(token);
+  for (const child of section.childNodes || []) {
+    if (child.tagName?.toLowerCase() === "meta") {
+      const attrs = parsedAttributes(child);
       if (!attrs.has("name") || !attrs.has("content")) throw new Error("claim-malformed");
       const claimName = normalizeText(attrs.get("name")).trim();
       const content = normalizeText(attrs.get("content")).trim();
       if (!claimName) throw new Error("claim-malformed");
       if (seen.has(claimName)) throw new Error(`claim-duplicate: ${claimName}`);
+      if (seen.size >= MAX_CLAIMS || utf8Length(claimName) > MAX_CLAIM_FIELD_BYTES || utf8Length(content) > MAX_CLAIM_FIELD_BYTES) throw new Error("resource-limit-exceeded");
       seen.add(claimName);
       claims[claimName] = content;
-      continue;
     }
-
-    if (!selfClosing) depth++;
   }
   return claims;
 }
@@ -419,7 +522,7 @@ export function extractClaimsFromSignedSection(html) {
 // === Signature binding (spec §2.1) ===
 
 /**
- * Build the canonical signature binding string per spec §2.1:
+ * Build the legacy 0.2 signature binding string:
  *   {content-hash}:{claims-hash}:{domain}:{signed-at}
  *
  * The signer's identity is intentionally NOT included; it is implicit in
@@ -440,6 +543,73 @@ export function buildSignatureBinding({ contentHash, claimsHash, domain, signedA
   }
   validateSerializedOrigin(domain);
   return `${contentHash}:${claimsHash}:${domain}:${signedAt}`;
+}
+
+export const SIGNING_PROFILE_V1 = Object.freeze({
+  profile: "htmltrust-signature-v1",
+  canonicalizationProfile: "htmltrust-c14n-v1",
+  attributeProfile: "htmltrust-attrs-v1",
+  urlProfile: "htmltrust-safe-url-v1",
+  context: "https://htmltrust.org/protocol/signed-section",
+});
+
+export function deriveSigningLocationV1(documentURL, scope) {
+  let url;
+  try {
+    url = new URL(documentURL);
+  } catch {
+    throw new Error("origin-not-supported");
+  }
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new Error("origin-not-supported");
+  }
+  if (scope === "origin") return url.origin;
+  if (scope !== "url") throw new Error("scope-unsupported");
+  url.hash = "";
+  return url.href;
+}
+
+export function validateSignedAtV1(value) {
+  if (typeof value !== "string" || !/^(?!0000)\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$/.test(value)) {
+    throw new Error("timestamp-invalid");
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().replace(".000Z", "Z") !== value) {
+    throw new Error("timestamp-invalid");
+  }
+  return value;
+}
+
+/** Build the RFC 8785 signing payload fixed by htmltrust-signature-v1. */
+export function buildSigningPayloadV1({
+  contentHash,
+  claimsHash,
+  documentURL,
+  scope,
+  keyid,
+  algorithm,
+  signedAt,
+}) {
+  for (const [name, value] of Object.entries({ contentHash, claimsHash, documentURL, scope, keyid, algorithm, signedAt })) {
+    if (typeof value !== "string" || value === "" || value.trim() !== value) {
+      throw new Error(`signing-object-invalid: ${name}`);
+    }
+  }
+  validateSignedAtV1(signedAt);
+  return canonicalizeJson({
+    algorithm,
+    attributeProfile: SIGNING_PROFILE_V1.attributeProfile,
+    canonicalizationProfile: SIGNING_PROFILE_V1.canonicalizationProfile,
+    claimsHash,
+    contentHash,
+    context: SIGNING_PROFILE_V1.context,
+    keyid,
+    location: deriveSigningLocationV1(documentURL, scope),
+    profile: SIGNING_PROFILE_V1.profile,
+    scope,
+    signedAt,
+    urlProfile: SIGNING_PROFILE_V1.urlProfile,
+  });
 }
 
 export function validateSerializedOrigin(origin) {
@@ -727,8 +897,19 @@ export function isKeyRevoked(key, now = Date.now()) {
   if (!key) return false;
   if (key.revoked === true) return true;
   if (key.expires === undefined || key.expires === null || key.expires === "") return false;
-  const expiresAt = Date.parse(String(key.expires));
-  return Number.isNaN(expiresAt) || expiresAt <= now;
+  if (typeof key.expires !== "string") return true;
+  const expiresAt = parseStrictLifecycleExpiry(key.expires);
+  return expiresAt === null || expiresAt <= now;
+}
+
+function parseStrictLifecycleExpiry(value) {
+  const match = /^(?!0000)\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?Z$/u.exec(value);
+  if (!match) return null;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 19) !== value.slice(0, 19)) {
+    return null;
+  }
+  return parsed.getTime();
 }
 
 /** Read the optional `revoked`/`expires` fields of a key document (spec §8.2). */
@@ -750,11 +931,71 @@ async function fetchJson(url, fetchImpl) {
   if (!f) throw new Error("no fetch implementation available");
   const res = await f(url);
   if (!res.ok) return null;
+  const contentLength = Number.parseInt(res.headers.get?.("content-length") ?? "", 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_REMOTE_KEY_BYTES) {
+    throw new Error("resource-limit-exceeded");
+  }
   const ct = res.headers.get?.("content-type") ?? "";
   const mediaType = ct.split(";", 1)[0].trim().toLowerCase();
-  if (mediaType === "application/json" || mediaType.endsWith("+json")) return await res.json();
-  // Treat as raw PEM if content-type is text-ish
-  return { _rawText: await res.text() };
+  const body = await readResponseBodyLimited(res);
+  if (mediaType === "application/json" || mediaType.endsWith("+json")) {
+    try {
+      return JSON.parse(body);
+    } catch {
+      return null;
+    }
+  }
+  // Treat as raw PEM if content-type is text-ish.
+  return { _rawText: body };
+}
+
+async function readResponseBodyLimited(response) {
+  const reader = response.body?.getReader?.();
+  if (reader) {
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array)) throw new Error("invalid response body");
+        total += value.byteLength;
+        if (total > MAX_REMOTE_KEY_BYTES) {
+          await reader.cancel();
+          throw new Error("resource-limit-exceeded");
+        }
+        chunks.push(value);
+      }
+    } catch (error) {
+      try { await reader.cancel(); } catch { /* already closed */ }
+      throw error;
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error("invalid response body");
+    }
+  }
+
+  // A few fetch-compatible shims omit ReadableStream. Keep a length guard for
+  // those shims, while real fetch responses use the bounded streaming path.
+  if (typeof response.arrayBuffer === "function") {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > MAX_REMOTE_KEY_BYTES) throw new Error("resource-limit-exceeded");
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  }
+  if (typeof response.text === "function") {
+    const text = await response.text();
+    if (utf8Length(text) > MAX_REMOTE_KEY_BYTES) throw new Error("resource-limit-exceeded");
+    return text;
+  }
+  throw new Error("invalid response body");
 }
 
 /**
@@ -770,11 +1011,11 @@ export function didWebResolver(opts = {}) {
   return {
     async resolve(keyid) {
       if (!keyid?.startsWith("did:web:")) return null;
-      const rest = keyid.slice("did:web:".length);
+      // A DID URL fragment identifies a resource in the DID document. It is
+      // never part of the URL used to retrieve that document.
+      const rest = keyid.slice("did:web:".length).split(/[/?#]/u, 1)[0];
       const [host, ...pathParts] = rest.split(":");
-      const url = pathParts.length
-        ? `https://${host}/${pathParts.join("/")}/did.json`
-        : `https://${host}/.well-known/did.json`;
+      const url = didWebDocumentURL(host, pathParts);
       const doc = await fetchJson(url, opts.fetch);
       if (!doc || doc._rawText) return null;
       if (doc.deactivated === true) return null;
@@ -792,6 +1033,30 @@ export function didWebResolver(opts = {}) {
       };
     },
   };
+}
+
+function didWebDocumentURL(host, pathParts) {
+  // did:web encodes the authority port colon as %3A so it cannot be
+  // confused with the colon-delimited path segments.
+  const authorityHost = host.replace(/%3a/gi, ":");
+  if (authorityHost.includes("%")) throw new Error("did:web invalid domain");
+  let authority;
+  try {
+    authority = new URL(`https://${authorityHost}`);
+  } catch {
+    throw new Error("did:web invalid domain");
+  }
+  if (authorityHost.includes("@") || authority.username || authority.password || authority.pathname !== "/" || authority.search || authority.hash) {
+    throw new Error("did:web invalid domain");
+  }
+  if (!pathParts.length) return `https://${authority.host}/.well-known/did.json`;
+  const path = pathParts.map(encodeDidWebPathPart).join("/");
+  return `https://${authority.host}/${path}/did.json`;
+}
+
+function encodeDidWebPathPart(part) {
+  if (!part || /%(?![0-9a-f]{2})/iu.test(part)) throw new Error("did:web invalid path");
+  return encodeURIComponent(part).replace(/%25([0-9a-f]{2})/giu, "%$1");
 }
 
 function vmTypeToAlgo(type) {
@@ -899,29 +1164,150 @@ export async function resolveKey(keyid, resolvers) {
  */
 export function buildEndorsementBinding(e) {
   for (const field of ["endorser", "endorsement", "algorithm", "timestamp"]) {
-    if (!e?.[field]) throw new Error(`buildEndorsementBinding: missing ${field}`);
+    if (typeof e?.[field] !== "string" || e[field].length === 0) {
+      throw new Error(`buildEndorsementBinding: missing ${field}`);
+    }
   }
   const { signature, ...unsigned } = e;
   return canonicalizeJson(unsigned);
 }
 
-export function canonicalizeJson(value) {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return `[${value.map(canonicalizeJson).join(",")}]`;
-  if (typeof value === "object") {
-    return `{${Object.keys(value)
-      .filter((k) => value[k] !== undefined)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonicalizeJson(value[k])}`)
-      .join(",")}}`;
+function assertUnicodeScalarString(value) {
+  for (let i = 0; i < value.length; i++) {
+    const unit = value.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const low = value.charCodeAt(i + 1);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error("jcs-invalid-surrogate");
+      i++;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw new Error("jcs-invalid-surrogate");
+    }
   }
-  if (typeof value === "string") return JSON.stringify(value);
+}
+
+function serializeJcs(value, depth = 0) {
+  if (value === null) return "null";
+  if (typeof value === "string") {
+    assertUnicodeScalarString(value);
+    return JSON.stringify(value);
+  }
+  if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new Error("non-finite JSON number");
     return JSON.stringify(value);
   }
-  if (typeof value === "boolean") return value ? "true" : "false";
+  if (Array.isArray(value)) {
+    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
+    return `[${value.map((item) => serializeJcs(item, depth + 1)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
+    const keys = Object.keys(value).sort(); // RFC 8785 uses UTF-16 code units.
+    return `{${keys.map((key) => {
+      assertUnicodeScalarString(key);
+      if (value[key] === undefined) throw new Error("unsupported JSON value: undefined");
+      return `${JSON.stringify(key)}:${serializeJcs(value[key], depth + 1)}`;
+    }).join(",")}}`;
+  }
   throw new Error(`unsupported JSON value: ${typeof value}`);
+}
+
+export function canonicalizeJson(value) {
+  return serializeJcs(value);
+}
+
+// A small strict JSON parser is used for raw documents. JSON.parse is unable
+// to report duplicate member names and accepts lone surrogate escapes, both
+// of which are forbidden by RFC 8785/I-JSON.
+class StrictJsonParser {
+  constructor(source) { this.source = source; this.index = 0; }
+  fail() { throw new Error("invalid JSON document"); }
+  ws() { while (this.index < this.source.length && " \t\r\n".includes(this.source[this.index])) this.index++; }
+  value(depth = 0) {
+    this.ws();
+    const c = this.source[this.index];
+    if (c === '"') return this.string();
+    if (c === "{") return this.object(depth);
+    if (c === "[") return this.array(depth);
+    if (this.source.startsWith("true", this.index)) { this.index += 4; return true; }
+    if (this.source.startsWith("false", this.index)) { this.index += 5; return false; }
+    if (this.source.startsWith("null", this.index)) { this.index += 4; return null; }
+    const match = this.source.slice(this.index).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+    if (!match) this.fail();
+    const raw = match[0];
+    const number = Number(raw);
+    if (!Number.isFinite(number)) throw new Error("jcs-number");
+    this.index += raw.length;
+    return number;
+  }
+  string() {
+    if (this.source[this.index++] !== '"') this.fail();
+    let out = "";
+    while (this.index < this.source.length) {
+      const c = this.source[this.index++];
+      if (c === '"') { assertUnicodeScalarString(out); return out; }
+      if (c === "\\") {
+        if (this.index >= this.source.length) this.fail();
+        const e = this.source[this.index++];
+        const escapes = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+        if (Object.hasOwn(escapes, e)) { out += escapes[e]; continue; }
+        if (e !== "u" || this.index + 4 > this.source.length) this.fail();
+        const hex = this.source.slice(this.index, this.index + 4);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) this.fail();
+        const unit = parseInt(hex, 16); this.index += 4;
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+          if (this.source.slice(this.index, this.index + 2) !== "\\u" || !/^[0-9a-fA-F]{4}$/.test(this.source.slice(this.index + 2, this.index + 6))) throw new Error("jcs-invalid-surrogate");
+          const low = parseInt(this.source.slice(this.index + 2, this.index + 6), 16);
+          if (low < 0xdc00 || low > 0xdfff) throw new Error("jcs-invalid-surrogate");
+          out += String.fromCodePoint(0x10000 + ((unit - 0xd800) << 10) + low - 0xdc00); this.index += 6;
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) throw new Error("jcs-invalid-surrogate");
+        else out += String.fromCharCode(unit);
+        continue;
+      }
+      if (c.charCodeAt(0) < 0x20) this.fail();
+      out += c;
+    }
+    this.fail();
+  }
+  array(depth) {
+    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
+    this.index++; const out = []; this.ws();
+    if (this.source[this.index] === "]") { this.index++; return out; }
+    while (true) {
+      out.push(this.value(depth + 1)); this.ws();
+      if (this.source[this.index] === "]") { this.index++; return out; }
+      if (this.source[this.index++] !== ",") this.fail();
+    }
+  }
+  object(depth) {
+    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
+    this.index++; const out = Object.create(null); const seen = new Set(); this.ws();
+    if (this.source[this.index] === "}") { this.index++; return out; }
+    while (true) {
+      this.ws(); if (this.source[this.index] !== '"') this.fail();
+      const key = this.string(); if (seen.has(key)) throw new Error("jcs-duplicate-key"); seen.add(key);
+      this.ws(); if (this.source[this.index++] !== ":") this.fail();
+      out[key] = this.value(depth + 1); this.ws();
+      if (this.source[this.index] === "}") { this.index++; return out; }
+      if (this.source[this.index++] !== ",") this.fail();
+    }
+  }
+  parse() { const result = this.value(); this.ws(); if (this.index !== this.source.length) this.fail(); return result; }
+}
+
+export function canonicalizeJsonDocument(document) {
+  if (typeof document !== "string") throw new TypeError("canonicalizeJsonDocument expects a string");
+  checkResourceBytes(document, "source");
+  let result;
+  try {
+    assertUnicodeScalarString(document);
+    result = serializeJcs(new StrictJsonParser(document).parse());
+  } catch (error) {
+    if (error?.message === "resource-limit-exceeded" || error?.message === "jcs-invalid-surrogate" || error?.message === "jcs-duplicate-key" || error?.message === "jcs-number") throw error;
+    throw new Error("jcs-invalid-json");
+  }
+  checkResourceBytes(result, "output");
+  return result;
 }
 
 /**
@@ -942,6 +1328,7 @@ export function canonicalizeJson(value) {
  */
 export async function verifyEndorsement(endorsement, resolvers) {
   if (!endorsement) return false;
+  if (!endorsementLifecycleIsValid(endorsement)) return false;
   const resolved = await resolveKey(endorsement.endorser, resolvers);
   if (!resolved) return false;
   if (isKeyRevoked(resolved)) return false;
@@ -958,4 +1345,13 @@ export async function verifyEndorsement(endorsement, resolvers) {
     resolved.publicKeyPem,
     endorsement.algorithm,
   );
+}
+
+/** Endorsement lifecycle fields are optional, but malformed values fail closed. */
+function endorsementLifecycleIsValid(endorsement, now = Date.now()) {
+  if (Object.hasOwn(endorsement, "revokedBy")) return false;
+  if (!Object.hasOwn(endorsement, "expires")) return true;
+  if (typeof endorsement.expires !== "string" || endorsement.expires === "") return false;
+  const expiresAt = parseStrictLifecycleExpiry(endorsement.expires);
+  return expiresAt !== null && expiresAt > now;
 }

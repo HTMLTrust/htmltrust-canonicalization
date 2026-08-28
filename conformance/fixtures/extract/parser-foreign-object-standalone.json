@@ -1,0 +1,6 @@
+{
+  "name": "parser-foreign-object-standalone",
+  "description": "A standalone foreignObject integration element is outside the portable parser profile.",
+  "input": "<signed-section><foreignObject><p>Text</p></foreignObject></signed-section>",
+  "error": "parser-profile-unsupported"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "scalar-root",
+  "description": "A JSON primitive is a valid JCS document root.",
+  "input": "true",
+  "expected": "true"
+}

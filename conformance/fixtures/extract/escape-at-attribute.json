@@ -1,0 +1,6 @@
+{
+  "name": "escape-at-attribute",
+  "description": "Literal U+0040 is doubled inside normalized signed attribute values.",
+  "input": "<p><span aria-label=\"Contact @name\">x</span></p>",
+  "expected": "@attr:span:aria-label:Contact @@name\nx"
+}

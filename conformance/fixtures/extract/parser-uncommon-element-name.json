@@ -1,0 +1,6 @@
+{
+  "name": "parser-uncommon-element-name",
+  "description": "Legal punctuation in an HTML tag name is retained as part of the name during portable-profile validation.",
+  "input": "<svg_x>custom</svg_x>",
+  "expected": "custom"
+}

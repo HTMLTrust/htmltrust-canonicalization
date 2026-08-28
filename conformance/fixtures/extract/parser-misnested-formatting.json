@@ -1,0 +1,6 @@
+{
+  "name": "parser-misnested-formatting",
+  "description": "Misnested formatting elements are outside the portable parser profile.",
+  "input": "<signed-section><p><b>Text</p></b></signed-section>",
+  "error": "parser-profile-unsupported"
+}

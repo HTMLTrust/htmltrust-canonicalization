@@ -27,8 +27,13 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUNNERS_DIR="$SCRIPT_DIR/runners"
+FIXTURES_ROOT="$SCRIPT_DIR/fixtures"
+
+# Count the files that this checkout will exercise. Keeping this derived from
+# disk prevents the summary and documentation from going stale when a fixture
+# is added.
+TOTAL_FIXTURES=$(find "$FIXTURES_ROOT" -mindepth 2 -maxdepth 2 -type f -name '*.json' -print | wc -l | tr -d ' ')
 
 EXTRA_ARGS=()
 if [ "${1:-}" = "--update" ]; then
@@ -105,6 +110,7 @@ fi
 if require_bin "Rust" cargo; then
     run_language "Rust" \
         cargo run --quiet --release \
+            --locked \
             --manifest-path "$RUNNERS_DIR/run-rust/Cargo.toml" \
             -- "${EXTRA_ARGS[@]}"
 fi
@@ -113,6 +119,7 @@ echo
 echo "=========================================="
 echo "  Summary"
 echo "=========================================="
+echo "  FIXTURES: ${TOTAL_FIXTURES}"
 [ ${#PASSED_LANGS[@]}  -gt 0 ] && echo "  PASS:    ${PASSED_LANGS[*]}"
 [ ${#FAILED_LANGS[@]}  -gt 0 ] && echo "  FAIL:    ${FAILED_LANGS[*]}"
 [ ${#CRASHED_LANGS[@]} -gt 0 ] && echo "  CRASH:   ${CRASHED_LANGS[*]}"

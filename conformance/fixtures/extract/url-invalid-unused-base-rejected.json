@@ -1,0 +1,7 @@
+{
+  "name": "url-invalid-unused-base-rejected",
+  "description": "A supplied document base is validated even when the HTML has no signed URL attributes.",
+  "input": "<p>x</p>",
+  "baseURL": "not a URL",
+  "error": "attribute-canonicalization-failed"
+}

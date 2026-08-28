@@ -1,0 +1,6 @@
+{
+  "name": "parser-table-trailing-foster-text",
+  "description": "Non-space text after a table row would be foster-parented and is rejected.",
+  "input": "<table><tr><td>x</td></tr>tail</table>",
+  "error": "parser-profile-unsupported"
+}

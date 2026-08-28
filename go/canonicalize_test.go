@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalize(t *testing.T) {
@@ -60,6 +61,20 @@ func TestNormalize(t *testing.T) {
 					tt.inputA, a, tt.inputB, b, same, tt.wantSame)
 			}
 		})
+	}
+}
+
+func TestNormalizeCheckedEnforcesResourceLimits(t *testing.T) {
+	if _, err := NormalizeTextChecked(strings.Repeat("x", maxResourceBytes+1)); err == nil || !strings.Contains(err.Error(), "resource-limit-exceeded") {
+		t.Fatalf("expected checked normalization input limit, got %v", err)
+	}
+	if _, err := NormalizeChecked(strings.Repeat("x", maxResourceBytes+1)); err == nil || !strings.Contains(err.Error(), "resource-limit-exceeded") {
+		t.Fatalf("expected checked trim normalization input limit, got %v", err)
+	}
+	// The legacy wrappers remain source-compatible and intentionally do not
+	// return an error for oversized input.
+	if got := NormalizeText(strings.Repeat("x", maxResourceBytes+1)); len(got) != maxResourceBytes+1 {
+		t.Fatalf("legacy NormalizeText changed oversized-input behavior: got %d bytes", len(got))
 	}
 }
 
@@ -131,27 +146,61 @@ func TestExtractCanonicalText(t *testing.T) {
 	}
 }
 
+func TestExtractCanonicalTextRejectsUnterminatedNumericReferences(t *testing.T) {
+	for _, input := range []string{
+		"<p>&#65</p>",
+		"<p>&#x41</p>",
+		`<a aria-label="&#65">link</a>`,
+	} {
+		if _, err := ExtractCanonicalText(input); err == nil || !strings.Contains(err.Error(), "parser-profile-unsupported") {
+			t.Errorf("ExtractCanonicalText(%q) error = %v, want parser-profile-unsupported", input, err)
+		}
+	}
+}
+
 // ----- CanonicalizeClaims -----
 
 func TestCanonicalizeClaims(t *testing.T) {
-	got := CanonicalizeClaims(map[string]string{
+	got, err := CanonicalizeClaims(map[string]string{
 		"signed-at": "2025-01-01T00:00:00Z",
 		"author":    "alice",
 		"domain":    "https://example.com",
 	})
-	want := "author:alice\ndomain:https://example.com\nsigned-at:2025-01-01T00:00:00Z\n"
+	if err != nil {
+		t.Fatalf("CanonicalizeClaims: %v", err)
+	}
+	want := "author:alice\ndomain:https\\://example.com\nsigned-at:2025-01-01T00\\:00\\:00Z\n"
 	if got != want {
 		t.Errorf("CanonicalizeClaims = %q, want %q", got, want)
 	}
 }
 
 func TestCanonicalizeClaimsNormalizesValues(t *testing.T) {
-	got := CanonicalizeClaims(map[string]string{
+	got, err := CanonicalizeClaims(map[string]string{
 		"title": "“Hello”",
 	})
+	if err != nil {
+		t.Fatalf("CanonicalizeClaims: %v", err)
+	}
 	want := "title:\"Hello\"\n"
 	if got != want {
 		t.Errorf("CanonicalizeClaims = %q, want %q", got, want)
+	}
+}
+
+func TestSigningProfileV1LocationAndTimestamp(t *testing.T) {
+	location, err := DeriveSigningLocationV1("HTTPS://BÜCHER.EXAMPLE:443/a/../article?q=1#part", "url")
+	if err != nil || location != "https://xn--bcher-kva.example/article?q=1" {
+		t.Fatalf("URL location = %q, %v", location, err)
+	}
+	location, err = DeriveSigningLocationV1("https://example.org:8443/a?q=1#part", "origin")
+	if err != nil || location != "https://example.org:8443" {
+		t.Fatalf("origin location = %q, %v", location, err)
+	}
+	for _, value := range []string{"2023-02-29T23:59:59Z", "2026-01-15T12:00:00.000Z"} {
+		if err := ValidateSignedAtV1(value); err == nil {
+			t.Fatalf("expected timestamp %q to fail", value)
+		}
 	}
 }
 
@@ -402,6 +451,88 @@ func TestDidWebResolver(t *testing.T) {
 	}
 }
 
+func TestDidWebResolverPathDocument(t *testing.T) {
+	pemStr, _, _ := newEd25519PEM(t)
+	var requestedPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user/1/did.json", func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"verificationMethod": []map[string]any{{"type": "Ed25519VerificationKey2020", "publicKeyPem": pemStr}},
+		})
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport = rewriteTransport{base: srv.Client().Transport, target: srv.URL}
+	got, err := (DidWebResolver{HTTPClient: client}).Resolve(context.Background(), "did:web:example.test:user:1")
+	if err != nil || got == nil {
+		t.Fatalf("path DID resolution: key=%+v err=%v", got, err)
+	}
+	if requestedPath != "/user/1/did.json" {
+		t.Fatalf("path DID requested %q, want /user/1/did.json", requestedPath)
+	}
+}
+
+func TestDidWebResolverStripsFragmentAndDecodesPort(t *testing.T) {
+	pemStr, _, _ := newEd25519PEM(t)
+	var requestedPath string
+	var requestedHost string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/did.json", func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"verificationMethod": []map[string]any{{"type": "Ed25519VerificationKey2020", "publicKeyPem": pemStr}},
+		})
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport = rewriteTransport{base: srv.Client().Transport, target: srv.URL, seenHost: &requestedHost}
+	got, err := (DidWebResolver{HTTPClient: client}).Resolve(context.Background(), "did:web:example.com%3A3000#key-1")
+	if err != nil || got == nil {
+		t.Fatalf("fragment/port DID resolution: key=%+v err=%v", got, err)
+	}
+	if requestedPath != "/.well-known/did.json" {
+		t.Fatalf("DID requested path %q, want /.well-known/did.json", requestedPath)
+	}
+	if requestedHost != "example.com:3000" {
+		t.Fatalf("DID requested host %q, want example.com:3000", requestedHost)
+	}
+}
+
+func TestDidWebResolverRejectsInvalidUTF8Document(t *testing.T) {
+	pemStr, _, _ := newEd25519PEM(t)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		body := []byte(`{"ignored":"`)
+		body = append(body, 0xff)
+		body = append(body, []byte(`","verificationMethod":[{"publicKeyPem":"`+pemStr+`"}]}`)...)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport = rewriteTransport{base: srv.Client().Transport, target: srv.URL}
+	if _, err := (DidWebResolver{HTTPClient: client}).Resolve(context.Background(), "did:web:example.test"); err == nil || !strings.Contains(err.Error(), "invalid UTF-8") {
+		t.Fatalf("invalid UTF-8 DID document error = %v", err)
+	}
+}
+
+func TestDidWebDocumentURLPreservesPathEscapes(t *testing.T) {
+	got, err := didWebDocumentURL("example.com", []string{"foo%2Fbar"})
+	if err != nil {
+		t.Fatalf("didWebDocumentURL: %v", err)
+	}
+	if got != "https://example.com/foo%2Fbar/did.json" {
+		t.Fatalf("didWebDocumentURL = %q", got)
+	}
+	if _, err := didWebDocumentURL("example.com", []string{"bad%escape"}); err == nil {
+		t.Fatal("malformed percent escape was accepted")
+	}
+}
+
 func TestDidWebResolverDeclinesNonDid(t *testing.T) {
 	r := DidWebResolver{}
 	got, err := r.Resolve(context.Background(), "https://example.com/key.json")
@@ -417,9 +548,11 @@ func TestDirectURLResolverJSON(t *testing.T) {
 	pemStr, _, _ := newEd25519PEM(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"publicKey": pemStr,
 			"algorithm": "ed25519",
+			"revoked":   false,
+			"expires":   "2099-01-01T00:00:00Z",
 		})
 	}))
 	defer srv.Close()
@@ -429,7 +562,7 @@ func TestDirectURLResolverJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if got == nil || got.Algorithm != "ed25519" {
+	if got == nil || got.Algorithm != "ed25519" || got.Revoked || got.Expires != "2099-01-01T00:00:00Z" {
 		t.Fatalf("unexpected key: %+v", got)
 	}
 }
@@ -500,7 +633,93 @@ func TestTrustDirectoryResolver(t *testing.T) {
 	}
 }
 
+func TestTrustDirectoryResolverEscapesKeyIDPath(t *testing.T) {
+	pemStr, _, _ := newEd25519PEM(t)
+	const keyid = "part/with?query#fragment"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/keys/part%2Fwith%3Fquery%23fragment" {
+			t.Errorf("request path = %q, want escaped keyid path", r.URL.EscapedPath())
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"publicKey": pemStr, "algorithm": "ed25519"})
+	}))
+	defer srv.Close()
+	got, err := (TrustDirectoryResolver{BaseURLs: []string{srv.URL}, HTTPClient: srv.Client()}).Resolve(context.Background(), keyid)
+	if err != nil || got == nil {
+		t.Fatalf("escaped keyid resolution: key=%+v err=%v", got, err)
+	}
+}
+
+func TestResolvedKeyLifecycle(t *testing.T) {
+	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	if !IsKeyRevoked(&ResolvedKey{Revoked: true}, now) {
+		t.Fatal("revoked key was accepted")
+	}
+	if !IsKeyRevoked(&ResolvedKey{Expires: "2026-08-27T11:59:59Z"}, now) {
+		t.Fatal("expired key was accepted")
+	}
+	if !IsKeyRevoked(&ResolvedKey{Expires: "not-a-timestamp"}, now) {
+		t.Fatal("invalid expiry was accepted")
+	}
+	if IsKeyRevoked(&ResolvedKey{Expires: "2026-08-27T12:00:01Z"}, now) {
+		t.Fatal("future expiry was rejected")
+	}
+}
+
+type staticKeyResolver struct{ key *ResolvedKey }
+
+func (r staticKeyResolver) Resolve(context.Context, string) (*ResolvedKey, error) {
+	return r.key, nil
+}
+
+func TestVerifyEndorsementRejectsLifecycle(t *testing.T) {
+	base := Endorsement{
+		Endorser:    "did:web:example.test",
+		Endorsement: "sha256:content",
+		Signature:   "AAAA",
+		Timestamp:   "2026-08-27T12:00:00Z",
+		Algorithm:   "ed25519",
+	}
+	cases := []struct {
+		name        string
+		endorsement Endorsement
+		key         *ResolvedKey
+	}{
+		{"revoked key", base, &ResolvedKey{Revoked: true}},
+		{"expired key", base, &ResolvedKey{Expires: "2020-01-01T00:00:00Z"}},
+		{"revoked endorsement", func() Endorsement { e := base; e.RevokedBy = "did:web:authority"; return e }(), &ResolvedKey{}},
+		{"expired endorsement", func() Endorsement { e := base; e.Expires = "2020-01-01T00:00:00Z"; return e }(), &ResolvedKey{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, err := VerifyEndorsement(context.Background(), tc.endorsement, []KeyResolver{staticKeyResolver{key: tc.key}})
+			if err != nil || ok {
+				t.Fatalf("VerifyEndorsement = %v, %v; want false, nil", ok, err)
+			}
+		})
+	}
+}
+
 // ----- ResolveKey -----
+
+func TestExtractClaimsFromSignedSectionUsesDirectChildren(t *testing.T) {
+	claims, err := ExtractClaimsFromSignedSection(`<signed-section><meta name="author" content=" Alice "><meta name="signed-at" content="2026-08-27T12:00:00Z"><div><meta name="author" content="Nested"></div></signed-section>`)
+	if err != nil {
+		t.Fatalf("ExtractClaimsFromSignedSection: %v", err)
+	}
+	if len(claims) != 2 || claims["author"] != "Alice" || claims["signed-at"] != "2026-08-27T12:00:00Z" {
+		t.Fatalf("unexpected claims: %#v", claims)
+	}
+}
+
+func TestExtractClaimsFromSignedSectionRejectsNormalizedDuplicate(t *testing.T) {
+	_, err := ExtractClaimsFromSignedSection(`<meta name="author" content="A"><meta name=" author " content="B">`)
+	if err == nil || !strings.Contains(err.Error(), "claim-duplicate") {
+		t.Fatalf("expected claim-duplicate, got %v", err)
+	}
+}
 
 func TestResolveKeyChain(t *testing.T) {
 	pemStr, _, _ := newEd25519PEM(t)
@@ -579,6 +798,34 @@ func TestVerifyEndorsement(t *testing.T) {
 	}
 }
 
+func TestBuildEndorsementBindingIncludesOptionalAndExtensionFields(t *testing.T) {
+	got, err := BuildEndorsementBinding(Endorsement{
+		Endorser:    "https://example.org/keys/alice",
+		Endorsement: "sha256:contenthash",
+		Timestamp:   "2026-08-27T12:00:00Z",
+		Algorithm:   "ed25519",
+		Claim:       "reviewed",
+		Expires:     "2027-08-27T12:00:00Z",
+		Extensions: map[string]any{
+			"z": map[string]any{"b": 2, "a": 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildEndorsementBinding: %v", err)
+	}
+	want := `{"algorithm":"ed25519","claim":"reviewed","endorsement":"sha256:contenthash","endorser":"https://example.org/keys/alice","expires":"2027-08-27T12:00:00Z","timestamp":"2026-08-27T12:00:00Z","z":{"a":1,"b":2}}`
+	if got != want {
+		t.Fatalf("binding mismatch\nwant: %s\n got: %s", want, got)
+	}
+}
+
+func TestCanonicalizeEndorsementDocumentRejectsDuplicateMembers(t *testing.T) {
+	document := []byte(`{"endorser":"a","endorser":"b","endorsement":"sha256:x","algorithm":"ed25519","timestamp":"2026-08-27T12:00:00Z","signature":"x"}`)
+	if _, err := CanonicalizeEndorsementDocument(document); err == nil || !strings.Contains(err.Error(), "jcs-duplicate-key") {
+		t.Fatalf("expected jcs-duplicate-key, got %v", err)
+	}
+}
+
 func TestVerifyEndorsementMissingFields(t *testing.T) {
 	cases := []Endorsement{
 		{Endorser: "", Endorsement: "x", Signature: "x", Timestamp: "x"},
@@ -600,13 +847,17 @@ func TestVerifyEndorsementMissingFields(t *testing.T) {
 // requests to point at `target` (host + scheme), preserving path and query.
 // Used so DidWebResolver can be exercised without DNS gymnastics.
 type rewriteTransport struct {
-	base   http.RoundTripper
-	target string
+	base     http.RoundTripper
+	target   string
+	seenHost *string
 }
 
 func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.seenHost != nil {
+		*t.seenHost = req.URL.Host
+	}
 	// Build a new URL: target + original path + raw query.
-	newURL := fmt.Sprintf("%s%s", strings.TrimRight(t.target, "/"), req.URL.Path)
+	newURL := fmt.Sprintf("%s%s", strings.TrimRight(t.target, "/"), req.URL.EscapedPath())
 	if req.URL.RawQuery != "" {
 		newURL += "?" + req.URL.RawQuery
 	}

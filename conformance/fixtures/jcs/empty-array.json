@@ -1,0 +1,6 @@
+{
+  "name": "empty-array",
+  "description": "An empty JSON array remains an array.",
+  "input": "[]",
+  "expected": "[]"
+}

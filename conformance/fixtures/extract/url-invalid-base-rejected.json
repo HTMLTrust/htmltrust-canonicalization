@@ -1,0 +1,7 @@
+{
+  "name": "url-invalid-base-rejected",
+  "description": "A relative signed URL fails when the supplied document base cannot be parsed.",
+  "input": "<p><a href=\"next\">l</a></p>",
+  "baseURL": "not a URL",
+  "error": "attribute-canonicalization-failed"
+}

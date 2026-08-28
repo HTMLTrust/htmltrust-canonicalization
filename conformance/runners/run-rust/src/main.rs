@@ -22,7 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use htmltrust_canonicalization::{
-    canonicalize_claims_checked, normalize_text, try_extract_canonical_text_with_base_url,
+    canonicalize_claims_checked, canonicalize_json_document, try_extract_canonical_text_v1,
+    try_normalize_text_v1,
 };
 use serde_json::{Map, Value};
 
@@ -31,19 +32,35 @@ use serde_json::{Map, Value};
 /// caller can match it against an `error` fixture.
 fn run_suite(suite: &str, fx: &Map<String, Value>) -> Result<String, String> {
     let input = fx.get("input").cloned().unwrap_or(Value::Null);
+    let repeat = fx.get("repeat").and_then(Value::as_u64).unwrap_or(1);
+    let repeated = |s: &str| -> Result<Vec<u8>, String> {
+        let n = usize::try_from(repeat).map_err(|_| "resource-limit-exceeded".to_string())?;
+        let total = s
+            .len()
+            .checked_mul(n)
+            .ok_or_else(|| "resource-limit-exceeded".to_string())?;
+        let mut bytes = Vec::with_capacity(total);
+        for _ in 0..n {
+            bytes.extend_from_slice(s.as_bytes());
+        }
+        Ok(bytes)
+    };
     match suite {
         "normalize" => {
             let s = input
                 .as_str()
                 .ok_or_else(|| "normalize input must be a string".to_string())?;
-            Ok(normalize_text(s, false))
+            let bytes = repeated(s)?;
+            try_normalize_text_v1(&bytes, false)
         }
         "extract" => {
             let s = input
                 .as_str()
                 .ok_or_else(|| "extract input must be a string".to_string())?;
             let base = fx.get("baseURL").and_then(|v| v.as_str());
-            try_extract_canonical_text_with_base_url(s, base)
+            let bytes = repeated(s)?;
+            let base = base.map(str::as_bytes);
+            try_extract_canonical_text_v1(&bytes, base)
         }
         "claims" => {
             let obj = input
@@ -51,15 +68,20 @@ fn run_suite(suite: &str, fx: &Map<String, Value>) -> Result<String, String> {
                 .ok_or_else(|| "claims input must be an object".to_string())?;
             let mut map: BTreeMap<String, String> = BTreeMap::new();
             for (k, v) in obj {
-                // Coerce non-string values to their JSON representation so
-                // simple scalars (numbers, bools) work without losing data.
-                let value = match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
+                let s = v.as_str().ok_or_else(|| "claim-malformed".to_string())?;
+                let n =
+                    usize::try_from(repeat).map_err(|_| "resource-limit-exceeded".to_string())?;
+                let value = s.repeat(n);
                 map.insert(k.clone(), value);
             }
             canonicalize_claims_checked(&map)
+        }
+        "jcs" => {
+            let s = input
+                .as_str()
+                .ok_or_else(|| "jcs input must be a string".to_string())?;
+            let bytes = repeated(s)?;
+            canonicalize_json_document(&bytes)
         }
         _ => unreachable!("unknown suite: {suite}"),
     }
@@ -124,10 +146,9 @@ fn locate_conformance() -> (PathBuf, PathBuf) {
 }
 
 fn load_fixture(path: &Path) -> Map<String, Value> {
-    let raw = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let v: Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    let raw = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let v: Value =
+        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
     match v {
         Value::Object(m) => m,
         _ => panic!("fixture {} is not a JSON object", path.display()),
@@ -149,8 +170,7 @@ fn save_fixture(path: &Path, fx: &Map<String, Value>) {
             ordered.insert(k.clone(), v.clone());
         }
     }
-    let pretty = serde_json::to_string_pretty(&Value::Object(ordered))
-        .expect("serialize");
+    let pretty = serde_json::to_string_pretty(&Value::Object(ordered)).expect("serialize");
     let mut out = pretty;
     out.push('\n');
     fs::write(path, out).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
@@ -170,7 +190,7 @@ fn main() -> ExitCode {
     let skipped = 0usize;
     let mut failures: Vec<String> = Vec::new();
 
-    for suite in ["normalize", "extract", "claims"] {
+    for suite in ["normalize", "extract", "claims", "jcs"] {
         for path in list_fixtures(&fixtures_root.join(suite)) {
             let id = path
                 .strip_prefix(&repo_root)
@@ -225,10 +245,7 @@ fn main() -> ExitCode {
                 continue;
             }
 
-            let expected = fixture
-                .get("expected")
-                .cloned()
-                .unwrap_or(Value::Null);
+            let expected = fixture.get("expected").cloned().unwrap_or(Value::Null);
             let expected_s = expected.as_str().unwrap_or("");
             if actual == expected_s {
                 passed += 1;

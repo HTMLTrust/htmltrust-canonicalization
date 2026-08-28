@@ -14,20 +14,22 @@
     }
   },
   "require": {
-    "php": ">=7.2",
+    "php": ">=8.5",
+    "ext-dom": "*",
     "ext-intl": "*",
     "ext-mbstring": "*",
     "ext-json": "*",
     "ext-openssl": "*",
-    "ext-sodium": "*"
+    "ext-sodium": "*",
+    "root23/php-json-canonicalization": "1.0.1"
   },
   "suggest": {
     "ext-curl": "Used by the default HttpFetcher for keyid resolution; falls back to file_get_contents when missing."
   },
   "require-dev": {
-    "phpunit/phpunit": "^8.0 || ^9.0 || ^10.0"
+    "phpunit/phpunit": "10.5.64"
   },
   "scripts": {
-    "test": "phpunit --colors=always tests/"
+    "test": "phpunit --do-not-cache-result --colors=always tests/"
   }
 }

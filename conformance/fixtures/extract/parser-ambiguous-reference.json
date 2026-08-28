@@ -1,0 +1,6 @@
+{
+  "name": "parser-ambiguous-reference",
+  "description": "Ambiguous named character references are rejected.",
+  "input": "<signed-section><p>&notit;</p></signed-section>",
+  "error": "parser-profile-unsupported"
+}

@@ -12,14 +12,18 @@
  *   php run-php.php --update   # rewrite `expected` from the current
  *                              # binding output
  *
- * The PHP binding covers normalize, extract, and claims fixtures.
+ * The PHP binding covers normalize, extract, claims, and JCS fixtures.
  *
- * Requires PHP 7.2+ with the intl extension (for Normalizer::normalizeText).
+ * Requires PHP 8.5+ with DOM and intl extensions.
  */
 
 declare(strict_types=1);
 
 require_once __DIR__ . '/../../php/src/Canonicalize.php';
+$autoload = __DIR__ . '/../../php/vendor/autoload.php';
+if (is_file($autoload)) {
+    require_once $autoload;
+}
 
 use HTMLTrust\Canonicalization\Canonicalize;
 
@@ -47,19 +51,46 @@ $runners = [
         if (!is_string($fx['input'])) {
             throw new RuntimeException('normalize fixture input must be a string');
         }
-        return [Canonicalize::normalizeText($fx['input']), true];
+        $input = $fx['input'];
+        if (isset($fx['repeat'])) {
+            $input = str_repeat($input, (int) $fx['repeat']);
+        }
+        return [Canonicalize::normalizeText($input), true];
     },
     'extract' => static function (array $fx) {
         if (!is_string($fx['input'])) {
             throw new RuntimeException('extract fixture input must be a string');
         }
-        return [Canonicalize::extractCanonicalText($fx['input'], false, $fx['baseURL'] ?? null), true];
+        $input = $fx['input'];
+        if (isset($fx['repeat'])) {
+            $input = str_repeat($input, (int) $fx['repeat']);
+        }
+        return [Canonicalize::extractCanonicalText($input, false, $fx['baseURL'] ?? null), true];
     },
     'claims' => static function (array $fx) {
         if (!is_array($fx['input'])) {
             throw new RuntimeException('claims fixture input must be an object');
         }
-        return [Canonicalize::canonicalizeClaims($fx['input']), true];
+        $input = $fx['input'];
+        if (isset($fx['repeat'])) {
+            $repeat = (int) $fx['repeat'];
+            foreach ($input as $name => $value) {
+                if (is_string($value)) {
+                    $input[$name] = str_repeat($value, $repeat);
+                }
+            }
+        }
+        return [Canonicalize::canonicalizeClaims($input), true];
+    },
+    'jcs' => static function (array $fx) {
+        if (!is_string($fx['input'])) {
+            throw new RuntimeException('jcs fixture input must be a raw JSON string');
+        }
+        $input = $fx['input'];
+        if (isset($fx['repeat'])) {
+            $input = str_repeat($input, (int) $fx['repeat']);
+        }
+        return [Canonicalize::canonicalizeJsonDocument($input), true];
     },
 ];
 
@@ -68,7 +99,7 @@ $failed = 0;
 $skipped = 0;
 $failures = [];
 
-foreach (['normalize', 'extract', 'claims'] as $suite) {
+foreach (['normalize', 'extract', 'claims', 'jcs'] as $suite) {
     $paths = list_fixtures($fixturesDir . '/' . $suite);
     $runner = $runners[$suite];
     foreach ($paths as $path) {

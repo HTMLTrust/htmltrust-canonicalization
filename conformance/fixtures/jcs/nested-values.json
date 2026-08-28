@@ -1,0 +1,6 @@
+{
+  "name": "nested-values",
+  "description": "Objects sort recursively while array order is preserved.",
+  "input": "{\"z\":[3,{\"b\":2,\"a\":1}],\"a\":{\"d\":false,\"c\":null}}",
+  "expected": "{\"a\":{\"c\":null,\"d\":false},\"z\":[3,{\"a\":1,\"b\":2}]}"
+}

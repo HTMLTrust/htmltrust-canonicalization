@@ -1,0 +1,6 @@
+{
+  "name": "parser-comment-trailing-hyphen",
+  "description": "A comment whose body ends with a hyphen is outside the portable parser profile.",
+  "input": "<p>before</p><!-- trailing ---><p>after</p>",
+  "error": "parser-profile-unsupported"
+}
