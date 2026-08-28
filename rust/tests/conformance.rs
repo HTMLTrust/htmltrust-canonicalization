@@ -21,6 +21,16 @@ fn jcs_rejects_excessive_nesting() {
     );
 }
 
+#[test]
+fn jcs_rejects_negative_zero_and_underflow() {
+    for document in [&br#"{"value":-0}"#[..], &br#"{"value":-1e-400}"#[..]] {
+        assert_eq!(
+            canonicalize_json_document(document),
+            Err("jcs-number".to_string())
+        );
+    }
+}
+
 /// One conformance vector. `(input_a, input_b, should_match, description)`.
 type Case = (&'static str, &'static str, bool, &'static str);
 
@@ -163,11 +173,64 @@ fn fallible_text_apis_enforce_source_and_output_limits() {
 fn fallible_text_apis_reject_invalid_utf8() {
     assert_eq!(
         htmltrust_canonicalization::try_normalize_text_v1(b"\xff", false),
-        Err("invalid-utf8".into())
+        Err("parser-profile-unsupported".into())
     );
     assert_eq!(
         htmltrust_canonicalization::try_extract_canonical_text_v1(b"\xff", None),
-        Err("invalid-utf8".into())
+        Err("parser-profile-unsupported".into())
+    );
+    assert_eq!(
+        htmltrust_canonicalization::try_normalize_text_v1(
+            &vec![0xff; MAX_DOCUMENT_BYTES + 1],
+            false,
+        ),
+        Err("resource-limit-exceeded".into())
+    );
+}
+
+#[test]
+fn checked_claim_map_enforces_normalized_field_limits() {
+    let mut claims = BTreeMap::new();
+    claims.insert("x".repeat(4097), "value".to_string());
+    assert_eq!(
+        htmltrust_canonicalization::canonicalize_claims_checked(&claims),
+        Err("resource-limit-exceeded".into())
+    );
+
+    let mut claims = BTreeMap::new();
+    claims.insert("name".to_string(), "x".repeat(4097));
+    assert_eq!(
+        htmltrust_canonicalization::canonicalize_claims_checked(&claims),
+        Err("resource-limit-exceeded".into())
+    );
+}
+
+#[test]
+fn extraction_applies_output_limit_after_finalization() {
+    let unit = r#"<p href="x" src="x" alt="x" aria-label="x"></p>"#;
+    let source = unit.repeat(10_000);
+    let output = htmltrust_canonicalization::try_extract_canonical_text_with_base_url(
+        &source,
+        Some("https://example.com/"),
+    )
+    .expect("finalized output is within the limit");
+    assert_eq!(output.len(), 1_039_999);
+}
+
+#[test]
+fn malformed_json_precedes_surrogate_classification() {
+    let error = canonicalize_json_document(br#"{"value":"\uD800"#).unwrap_err();
+    assert!(
+        error.starts_with("jcs-invalid-json:"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn valid_json_lone_surrogate_is_classified_after_parsing() {
+    assert_eq!(
+        canonicalize_json_document(br#""\uD800""#),
+        Err("jcs-invalid-surrogate".into())
     );
 }
 

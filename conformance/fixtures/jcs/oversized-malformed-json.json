@@ -1,0 +1,7 @@
+{
+  "name": "oversized-malformed-json",
+  "description": "The source ceiling takes precedence over malformed JSON classification.",
+  "input": "{",
+  "repeat": 1048577,
+  "error": "resource-limit-exceeded"
+}

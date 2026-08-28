@@ -93,6 +93,11 @@ class Canonicalize
         if (strlen($text) > self::MAX_RESOURCE_BYTES) {
             throw new \InvalidArgumentException('resource-limit-exceeded');
         }
+        // PHP strings are byte sequences. Reject malformed UTF-8 before the
+        // Unicode normalizer or PCRE can replace it or return null.
+        if (preg_match('//u', $text) !== 1) {
+            throw new \InvalidArgumentException('parser-profile-unsupported');
+        }
 
         // Phase 1: Unicode NFKC normalization.
         // Handles ligatures, fullwidth/halfwidth, presentation forms,
@@ -643,9 +648,6 @@ class Canonicalize
     private static function finalizeCanonicalParts(array $parts): string
     {
         $text = implode('', $parts);
-        if (strlen($text) > self::MAX_RESOURCE_BYTES) {
-            throw new \InvalidArgumentException('resource-limit-exceeded');
-        }
         while (strpos($text, '  ') !== false) {
             $text = str_replace('  ', ' ', $text);
         }
@@ -653,7 +655,11 @@ class Canonicalize
         while (strpos($text, "\n\n") !== false) {
             $text = str_replace("\n\n", "\n", $text);
         }
-        return trim($text, " \n");
+        $text = trim($text);
+        if (strlen($text) > self::MAX_RESOURCE_BYTES) {
+            throw new \InvalidArgumentException('resource-limit-exceeded');
+        }
+        return $text;
     }
 
     /**
@@ -806,7 +812,9 @@ class Canonicalize
         $entries = [];
         $seen = [];
         foreach ($claims as $name => $value) {
-            if (!is_string($name) || !is_string($value)) {
+            // PHP converts decimal string keys such as "1" to integers when
+            // constructing an array. They still represent valid claim names.
+            if ((!is_string($name) && !is_int($name)) || !is_string($value)) {
                 throw new \InvalidArgumentException('claim-malformed');
             }
             $normName = trim(self::normalizeText((string) $name));
@@ -1070,6 +1078,11 @@ class Canonicalize
         // permits integers larger than 2^53 when they have a finite binary64
         // representation, and rounds them exactly as ECMAScript does.
         if (is_infinite((float) $token)) {
+            throw new \InvalidArgumentException('jcs-number');
+        }
+        // RFC 8785 erratum 7920: reject negative zero, including negative
+        // values whose magnitude underflows to zero during binary64 parsing.
+        if ($token[0] === '-' && (float) $token == 0.0) {
             throw new \InvalidArgumentException('jcs-number');
         }
     }

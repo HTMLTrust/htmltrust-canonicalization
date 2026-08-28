@@ -721,6 +721,23 @@ func TestExtractClaimsFromSignedSectionRejectsNormalizedDuplicate(t *testing.T) 
 	}
 }
 
+func TestExtractClaimsFromSignedSectionSelectsFirstNestedSection(t *testing.T) {
+	claims, err := ExtractClaimsFromSignedSection(`<div><signed-section><meta name="author" content="Nested first"></signed-section></div><signed-section><meta name="author" content="Later"></signed-section>`)
+	if err != nil {
+		t.Fatalf("ExtractClaimsFromSignedSection: %v", err)
+	}
+	if claims["author"] != "Nested first" {
+		t.Fatalf("selected claims = %#v, want first nested signed-section", claims)
+	}
+}
+
+func TestExtractClaimsFromSignedSectionChecksFieldSizeBeforeDuplicate(t *testing.T) {
+	_, err := ExtractClaimsFromSignedSection(`<meta name="author" content="A"><meta name="author" content="` + strings.Repeat("x", maxClaimFieldBytes+1) + `">`)
+	if err == nil || !strings.Contains(err.Error(), "resource-limit-exceeded") {
+		t.Fatalf("oversized duplicate claim error = %v, want resource-limit-exceeded", err)
+	}
+}
+
 func TestResolveKeyChain(t *testing.T) {
 	pemStr, _, _ := newEd25519PEM(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -823,6 +840,14 @@ func TestCanonicalizeEndorsementDocumentRejectsDuplicateMembers(t *testing.T) {
 	document := []byte(`{"endorser":"a","endorser":"b","endorsement":"sha256:x","algorithm":"ed25519","timestamp":"2026-08-27T12:00:00Z","signature":"x"}`)
 	if _, err := CanonicalizeEndorsementDocument(document); err == nil || !strings.Contains(err.Error(), "jcs-duplicate-key") {
 		t.Fatalf("expected jcs-duplicate-key, got %v", err)
+	}
+}
+
+func TestCanonicalizeJSONDocumentRejectsNegativeZero(t *testing.T) {
+	for _, document := range []string{`{"value":-0}`, `{"value":-1e-400}`} {
+		if _, err := CanonicalizeJSONDocument([]byte(document)); err == nil || !strings.Contains(err.Error(), "jcs-number") {
+			t.Errorf("%s: expected jcs-number, got %v", document, err)
+		}
 	}
 }
 

@@ -46,7 +46,8 @@ htmltrust-canonicalization = "0.3"
 
 - `try_normalize_text` normalizes a UTF-8 `str` and enforces the 1 MiB source
   and output limits.
-- `try_normalize_text_v1` accepts bytes and also rejects invalid UTF-8.
+- `try_normalize_text_v1` accepts bytes and rejects invalid UTF-8 as
+  `parser-profile-unsupported`.
 - `try_extract_canonical_text_with_options` parses HTML with explicit
   compatibility whitespace and base URL options. Profile-v1 callers use
   `preserve_whitespace: false`; the portable profile rejects nesting deeper

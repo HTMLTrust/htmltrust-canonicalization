@@ -89,6 +89,10 @@ const ELLIPSIS_RE = /\u2026/g;
 export function normalizeText(text, options = {}) {
   if (typeof text !== "string") throw new TypeError("normalizeText expects a string");
   checkResourceBytes(text, "source");
+  // JavaScript strings can contain lone UTF-16 surrogates, but they have no
+  // UTF-8 source representation. Reject them before any normalization rather
+  // than allowing TextEncoder to silently replace them with U+FFFD.
+  assertUnicodeScalarString(text, "parser-profile-unsupported");
   const { preserveWhitespace = false } = options;
 
   // Phase 1: Unicode NFKC normalization
@@ -293,6 +297,7 @@ export function extractCanonicalText(html, options = {}) {
 }
 
 function parseHTMLFragment(html) {
+  assertUnicodeScalarString(html, "parser-profile-unsupported");
   validatePortableSource(html);
   const errors = [];
   const fragment = parse5.parseFragment(html, {
@@ -560,8 +565,8 @@ export function canonicalizeClaims(claims) {
     })
     .map(([name, value]) => {
       if (!name) throw new Error("claim-malformed");
-      if (seen.has(name)) throw new Error(`claim-duplicate: ${name}`);
       if (utf8Length(name) > MAX_CLAIM_FIELD_BYTES || utf8Length(value) > MAX_CLAIM_FIELD_BYTES) throw new Error("resource-limit-exceeded");
+      if (seen.has(name)) throw new Error(`claim-duplicate: ${name}`);
       seen.add(name);
       return [name, value];
     })
@@ -590,10 +595,7 @@ export function extractClaimsFromSignedSection(html) {
 
   checkResourceBytes(html, "source");
   const fragment = parseHTMLFragment(html);
-  let section = fragment;
-  for (const node of fragment.childNodes || []) {
-    if (node.tagName?.toLowerCase() === "signed-section") { section = node; break; }
-  }
+  const section = findFirstSignedSection(fragment) ?? fragment;
   const claims = {};
   const seen = new Set();
   for (const child of section.childNodes || []) {
@@ -603,13 +605,26 @@ export function extractClaimsFromSignedSection(html) {
       const claimName = normalizeText(attrs.get("name")).trim();
       const content = normalizeText(attrs.get("content")).trim();
       if (!claimName) throw new Error("claim-malformed");
+      if (seen.size >= MAX_CLAIMS) throw new Error("resource-limit-exceeded");
+      // Check field limits before duplicate detection. A duplicate oversized
+      // field is still a resource violation and must not be accepted as a
+      // duplicate-name failure.
+      if (utf8Length(claimName) > MAX_CLAIM_FIELD_BYTES || utf8Length(content) > MAX_CLAIM_FIELD_BYTES) throw new Error("resource-limit-exceeded");
       if (seen.has(claimName)) throw new Error(`claim-duplicate: ${claimName}`);
-      if (seen.size >= MAX_CLAIMS || utf8Length(claimName) > MAX_CLAIM_FIELD_BYTES || utf8Length(content) > MAX_CLAIM_FIELD_BYTES) throw new Error("resource-limit-exceeded");
       seen.add(claimName);
       claims[claimName] = content;
     }
   }
   return claims;
+}
+
+function findFirstSignedSection(node) {
+  for (const child of node.childNodes || []) {
+    if (child.tagName?.toLowerCase() === "signed-section") return child;
+    const nested = findFirstSignedSection(child);
+    if (nested) return nested;
+  }
+  return null;
 }
 
 // === Signature binding (spec §2.1) ===
@@ -688,6 +703,9 @@ export function buildSigningPayloadV1({
       throw new Error(`signing-object-invalid: ${name}`);
     }
   }
+  // Enforce the input side of the resource profile before URL parsing or any
+  // other derived-field work can shorten or otherwise transform the values.
+  jcsInputBytes({ contentHash, claimsHash, documentURL, scope, keyid, algorithm, signedAt });
   validateSignedAtV1(signedAt);
   return canonicalizeJson({
     algorithm,
@@ -1265,15 +1283,15 @@ export function buildEndorsementBinding(e) {
   return canonicalizeJson(unsigned);
 }
 
-function assertUnicodeScalarString(value) {
+function assertUnicodeScalarString(value, errorCode = "jcs-invalid-surrogate") {
   for (let i = 0; i < value.length; i++) {
     const unit = value.charCodeAt(i);
     if (unit >= 0xd800 && unit <= 0xdbff) {
       const low = value.charCodeAt(i + 1);
-      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error("jcs-invalid-surrogate");
+      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error(errorCode);
       i++;
     } else if (unit >= 0xdc00 && unit <= 0xdfff) {
-      throw new Error("jcs-invalid-surrogate");
+      throw new Error(errorCode);
     }
   }
 }
@@ -1287,10 +1305,15 @@ function serializeJcs(value, depth = 0) {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new Error("non-finite JSON number");
+    if (Object.is(value, -0)) throw new Error("jcs-number");
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
     if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
+    if (value.length > MAX_RESOURCE_BYTES) throw new Error("resource-limit-exceeded");
+    for (let index = 0; index < value.length; index++) {
+      if (!Object.hasOwn(value, index)) throw new Error("unsupported JSON value: sparse array");
+    }
     return `[${value.map((item) => serializeJcs(item, depth + 1)).join(",")}]`;
   }
   if (value && typeof value === "object") {
@@ -1305,8 +1328,67 @@ function serializeJcs(value, depth = 0) {
   throw new Error(`unsupported JSON value: ${typeof value}`);
 }
 
+// Object APIs do not receive a raw JSON byte string, so account for the
+// complete JSON-shaped value before serialization. This catches oversized
+// aggregate inputs even when a later canonicalization step could shorten a
+// string (for example, URL normalization in a signing payload). The final
+// serialized result is checked separately for the output ceiling.
+function jcsInputBytes(value, depth = 0, ancestors = new WeakSet()) {
+  const add = (left, right) => {
+    const total = left + right;
+    if (total > MAX_RESOURCE_BYTES) throw new Error("resource-limit-exceeded");
+    return total;
+  };
+  if (value === null) return 4;
+  if (typeof value === "string") {
+    assertUnicodeScalarString(value);
+    return add(2, utf8Length(value));
+  }
+  if (typeof value === "boolean") return value ? 4 : 5;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("non-finite JSON number");
+    if (Object.is(value, -0)) throw new Error("jcs-number");
+    return JSON.stringify(value).length;
+  }
+  if (Array.isArray(value)) {
+    if (depth >= MAX_JCS_DEPTH || value.length > MAX_RESOURCE_BYTES) throw new Error("resource-limit-exceeded");
+    if (ancestors.has(value)) throw new Error("unsupported JSON value: cyclic object");
+    ancestors.add(value);
+    let total = 2;
+    for (let index = 0; index < value.length; index++) {
+      if (!Object.hasOwn(value, index)) throw new Error("unsupported JSON value: sparse array");
+      total = add(total, jcsInputBytes(value[index], depth + 1, ancestors));
+      if (index + 1 < value.length) total = add(total, 1);
+    }
+    ancestors.delete(value);
+    return total;
+  }
+  if (value && typeof value === "object") {
+    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
+    if (ancestors.has(value)) throw new Error("unsupported JSON value: cyclic object");
+    ancestors.add(value);
+    let total = 2;
+    const keys = Object.keys(value);
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index];
+      assertUnicodeScalarString(key);
+      if (value[key] === undefined) throw new Error("unsupported JSON value: undefined");
+      total = add(total, add(2, utf8Length(key)));
+      total = add(total, 1);
+      total = add(total, jcsInputBytes(value[key], depth + 1, ancestors));
+      if (index + 1 < keys.length) total = add(total, 1);
+    }
+    ancestors.delete(value);
+    return total;
+  }
+  throw new Error(`unsupported JSON value: ${typeof value}`);
+}
+
 export function canonicalizeJson(value) {
-  return serializeJcs(value);
+  jcsInputBytes(value);
+  const result = serializeJcs(value);
+  checkResourceBytes(result, "output");
+  return result;
 }
 
 // A small strict JSON parser is used for raw documents. JSON.parse is unable
@@ -1330,6 +1412,9 @@ class StrictJsonParser {
     const raw = match[0];
     const number = Number(raw);
     if (!Number.isFinite(number)) throw new Error("jcs-number");
+    // RFC 8785 erratum 7920: reject every JSON token that decodes to IEEE-754
+    // negative zero, including values whose magnitude underflows to zero.
+    if (raw[0] === "-" && Object.is(number, -0)) throw new Error("jcs-number");
     this.index += raw.length;
     return number;
   }
@@ -1349,11 +1434,22 @@ class StrictJsonParser {
         if (!/^[0-9a-fA-F]{4}$/.test(hex)) this.fail();
         const unit = parseInt(hex, 16); this.index += 4;
         if (unit >= 0xd800 && unit <= 0xdbff) {
-          if (this.source.slice(this.index, this.index + 2) !== "\\u" || !/^[0-9a-fA-F]{4}$/.test(this.source.slice(this.index + 2, this.index + 6))) throw new Error("jcs-invalid-surrogate");
-          const low = parseInt(this.source.slice(this.index + 2, this.index + 6), 16);
+          // Keep malformed JSON distinct from a valid JSON string containing
+          // an unpaired UTF-16 code unit. A truncated string or malformed
+          // low-surrogate escape must reach the generic JSON error path.
+          if (this.source.slice(this.index, this.index + 2) !== "\\u") {
+            if (!hasUnescapedQuote(this.source, this.index)) this.fail();
+            throw new Error("jcs-invalid-surrogate");
+          }
+          const lowHex = this.source.slice(this.index + 2, this.index + 6);
+          if (!/^[0-9a-fA-F]{4}$/.test(lowHex)) this.fail();
+          const low = parseInt(lowHex, 16);
           if (low < 0xdc00 || low > 0xdfff) throw new Error("jcs-invalid-surrogate");
           out += String.fromCodePoint(0x10000 + ((unit - 0xd800) << 10) + low - 0xdc00); this.index += 6;
-        } else if (unit >= 0xdc00 && unit <= 0xdfff) throw new Error("jcs-invalid-surrogate");
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+          if (!hasUnescapedQuote(this.source, this.index)) this.fail();
+          throw new Error("jcs-invalid-surrogate");
+        }
         else out += String.fromCharCode(unit);
         continue;
       }
@@ -1386,6 +1482,17 @@ class StrictJsonParser {
     }
   }
   parse() { const result = this.value(); this.ws(); if (this.index !== this.source.length) this.fail(); return result; }
+}
+
+function hasUnescapedQuote(source, index) {
+  let escaped = false;
+  for (let i = index; i < source.length; i++) {
+    const c = source[i];
+    if (escaped) { escaped = false; continue; }
+    if (c === "\\") { escaped = true; continue; }
+    if (c === '"') return true;
+  }
+  return false;
 }
 
 export function canonicalizeJsonDocument(document) {

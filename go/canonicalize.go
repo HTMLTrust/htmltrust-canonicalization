@@ -105,7 +105,7 @@ func NormalizeTextChecked(text string, opts ...Options) (string, error) {
 		return "", fmt.Errorf("resource-limit-exceeded")
 	}
 	if !utf8.ValidString(text) {
-		return "", fmt.Errorf("invalid-utf8")
+		return "", fmt.Errorf("parser-profile-unsupported")
 	}
 	result := normalizeText(text, opts...)
 	if len(result) > maxResourceBytes {

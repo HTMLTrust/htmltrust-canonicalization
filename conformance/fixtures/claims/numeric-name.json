@@ -1,0 +1,9 @@
+{
+  "name": "numeric-name",
+  "description": "Decimal claim names remain valid names even when a host language stores them as integer map keys.",
+  "input": {
+    "1": "one",
+    "0": "zero"
+  },
+  "expected": "0:zero\n1:one\n"
+}

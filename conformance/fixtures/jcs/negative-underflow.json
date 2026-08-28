@@ -1,0 +1,6 @@
+{
+  "name": "negative-underflow",
+  "description": "RFC 8785 erratum 7920 rejects a negative number that underflows to binary64 negative zero.",
+  "input": "{\"value\":-1e-400}",
+  "error": "jcs-number"
+}

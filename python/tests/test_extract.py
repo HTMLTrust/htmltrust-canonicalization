@@ -81,6 +81,11 @@ def test_normalization_pipeline_applied():
     )
 
 
+def test_preserve_whitespace_finalization_strips_runs_around_newlines():
+    html = "<pre>before \t \n \t after</pre>"
+    assert extract_canonical_text(html, preserve_whitespace=True) == "before\nafter"
+
+
 def test_nested_blocks():
     """Deeply nested block structure still collapses repeated line feeds."""
     html = (
@@ -122,6 +127,11 @@ def test_parser_preflight_rejects_unclosed_and_foster_parented_text(html):
         extract_canonical_text(html)
 
 
+def test_parser_preflight_rejects_invalid_utf8_surrogate():
+    with pytest.raises(ValueError, match="parser-profile-unsupported"):
+        extract_canonical_text("<p>bad\ud800</p>")
+
+
 def test_colon_qualified_elements_count_toward_depth_limit():
     nested = "".join("<x:y>" for _ in range(257))
     closing = "".join("</x:y>" for _ in range(257))
@@ -150,6 +160,15 @@ def test_relative_url_no_base_fails():
 def test_invalid_base_url_fails_without_url_attributes():
     with pytest.raises(ValueError, match="attribute-canonicalization-failed"):
         extract_canonical_text("<p>x</p>", base_url="not a URL")
+
+
+def test_output_limit_applies_after_finalization():
+    unit = '<p href="x" src="x" alt="x" aria-label="x"></p>'
+    output = extract_canonical_text(
+        unit * 10_000,
+        base_url="https://example.com/",
+    )
+    assert len(output.encode("utf-8")) == 1_039_999
 
 
 def test_signed_semantic_attributes_are_canonicalized():

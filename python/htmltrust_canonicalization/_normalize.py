@@ -164,7 +164,14 @@ def normalize_text(text: str, preserve_whitespace: bool = False) -> str:
     """
     if not isinstance(text, str):
         raise TypeError("normalize_text expects a str")
-    if len(text.encode("utf-8")) > _MAX_RESOURCE_BYTES:
+    # A gross source-size breach takes precedence over malformed Unicode.
+    if len(text) > _MAX_RESOURCE_BYTES:
+        raise ValueError("resource-limit-exceeded")
+    try:
+        source_bytes = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("parser-profile-unsupported") from exc
+    if len(source_bytes) > _MAX_RESOURCE_BYTES:
         raise ValueError("resource-limit-exceeded")
 
     # Phase 1: NFKC -- ligatures, fullwidth/halfwidth, presentation forms,

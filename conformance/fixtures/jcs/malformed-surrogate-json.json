@@ -1,0 +1,6 @@
+{
+  "name": "malformed-surrogate-json",
+  "description": "Malformed JSON takes precedence over lone-surrogate classification.",
+  "input": "{\"value\":\"\\uD800",
+  "error": "jcs-invalid-json"
+}

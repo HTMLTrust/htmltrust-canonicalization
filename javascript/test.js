@@ -16,6 +16,7 @@ import {
   resolveKey,
   verifyEndorsement,
   isKeyRevoked,
+  canonicalizeJson,
   canonicalizeJsonDocument,
 } from './index.js';
 import * as nodeCrypto from 'node:crypto';
@@ -165,6 +166,14 @@ await check('extractClaimsFromSignedSection includes all direct child meta only'
   assert(!('Nested' in claims), 'nested meta must not be extracted');
 });
 
+await check('extractClaimsFromSignedSection selects the first signed-section anywhere', () => {
+  const claims = extractClaimsFromSignedSection(`
+    <div><signed-section><meta name="author" content="Nested first"></signed-section></div>
+    <signed-section><meta name="author" content="Later"></signed-section>
+  `);
+  assertEq(claims.author, 'Nested first');
+});
+
 await check('extractClaimsFromSignedSection rejects duplicate normalized names', () => {
   let threw = false;
   try {
@@ -173,6 +182,16 @@ await check('extractClaimsFromSignedSection rejects duplicate normalized names',
     threw = true;
   }
   assert(threw, 'expected duplicate direct child meta names to fail');
+});
+
+await check('extractClaimsFromSignedSection checks oversized fields before duplicates', () => {
+  let threw = false;
+  try {
+    extractClaimsFromSignedSection(`<meta name="author" content="A"><meta name="author" content="${'x'.repeat(4097)}">`);
+  } catch (error) {
+    threw = String(error).includes('resource-limit-exceeded');
+  }
+  assert(threw, 'oversized duplicate claim must fail as a resource violation');
 });
 
 await check('extractCanonicalText signs href/src/alt/aria-label attributes', () => {
@@ -203,6 +222,28 @@ await check('extractCanonicalText bounds malformed quoted tag scanning', () => {
   }
   assert(threw, 'unterminated quoted attributes must be rejected');
   assert(performance.now() - started < 1000, 'malformed quoted tag scanning must stay bounded');
+});
+
+await check('UTF-16 surrogates cannot enter the UTF-8 canonical profile', () => {
+  let normalizeThrew = false;
+  try { normalizeText('\ud800'); } catch (error) {
+    normalizeThrew = String(error).includes('parser-profile-unsupported');
+  }
+  assert(normalizeThrew, 'normalizeText must reject lone surrogates');
+
+  let extractThrew = false;
+  try { extractCanonicalText(`<p>bad\ud800</p>`); } catch (error) {
+    extractThrew = String(error).includes('parser-profile-unsupported');
+  }
+  assert(extractThrew, 'extractCanonicalText must reject non-UTF-8 source');
+});
+
+await check('source limits precede malformed UTF-16 classification', () => {
+  let rejected = false;
+  try { normalizeText('\ud800'.repeat(1024 * 1024 + 1)); } catch (error) {
+    rejected = String(error).includes('resource-limit-exceeded');
+  }
+  assert(rejected, 'oversized malformed source must report the resource limit');
 });
 
 await check('extractCanonicalText accepts qualified tag names and enforces element depth', () => {
@@ -244,6 +285,79 @@ await check('canonicalizeJsonDocument rejects excessive nesting', () => {
     threw = String(error).includes('resource-limit-exceeded');
   }
   assert(threw, 'JCS nesting beyond 256 levels must be rejected');
+});
+
+await check('canonicalizeJsonDocument rejects negative zero and underflow', () => {
+  for (const input of ['{"value":-0}', '{"value":-1e-400}']) {
+    let threw = false;
+    try { canonicalizeJsonDocument(input); } catch (error) {
+      threw = String(error).includes('jcs-number');
+    }
+    assert(threw, `negative zero must be rejected: ${input}`);
+  }
+});
+
+await check('canonicalizeJson rejects negative zero in object input', () => {
+  for (const input of [-0, { value: -0 }, [-0]]) {
+    let rejected = false;
+    try { canonicalizeJson(input); } catch (error) {
+      rejected = String(error).includes('jcs-number');
+    }
+    if (!rejected) throw new Error(`expected object input to reject negative zero: ${JSON.stringify(input)}`);
+  }
+});
+
+await check('canonicalizeJson rejects sparse and undefined values', () => {
+  const sparse = [];
+  sparse.length = 1;
+  let sparseRejected = false;
+  try { canonicalizeJson(sparse); } catch (error) { sparseRejected = String(error).includes('sparse array'); }
+  assert(sparseRejected, 'sparse arrays must be rejected');
+
+  let undefinedRejected = false;
+  try { canonicalizeJson({ value: undefined }); } catch (error) { undefinedRejected = String(error).includes('undefined'); }
+  assert(undefinedRejected, 'undefined object values must be rejected');
+  let surrogateRejected = false;
+  try { canonicalizeJson('\ud800'); } catch (error) { surrogateRejected = String(error).includes('jcs-invalid-surrogate'); }
+  assert(surrogateRejected, 'lone surrogates must use the JCS failure vocabulary');
+});
+
+await check('canonicalizeJson and buildSigningPayloadV1 enforce the input ceiling', () => {
+  let jsonRejected = false;
+  try { canonicalizeJson('x'.repeat(1024 * 1024)); } catch (error) { jsonRejected = String(error).includes('resource-limit-exceeded'); }
+  assert(jsonRejected, 'oversized object-call input must be rejected');
+
+  let outputRejected = false;
+  try { canonicalizeJson('\0'.repeat(1024 * 1024 - 2)); } catch (error) { outputRejected = String(error).includes('resource-limit-exceeded'); }
+  assert(outputRejected, 'expanded canonical JSON output must be rejected');
+
+  let payloadRejected = false;
+  try {
+    buildSigningPayloadV1({
+      contentHash: 'x'.repeat(1024 * 1024),
+      claimsHash: 'sha256:claims',
+      documentURL: 'https://example.org/article',
+      scope: 'url',
+      keyid: 'did:web:example.org',
+      algorithm: 'ed25519',
+      signedAt: '2026-05-01T10:30:00Z',
+    });
+  } catch (error) { payloadRejected = String(error).includes('resource-limit-exceeded'); }
+  assert(payloadRejected, 'oversized signing payload input must be rejected');
+});
+
+await check('canonicalizeJsonDocument classifies malformed surrogate JSON as JSON syntax', () => {
+  let malformed = false;
+  try { canonicalizeJsonDocument('{"value":"\\uD800'); } catch (error) {
+    malformed = String(error).includes('jcs-invalid-json');
+  }
+  assert(malformed, 'malformed JSON must precede surrogate classification');
+});
+
+await check('extractCanonicalText applies output limit after finalization', () => {
+  const unit = '<p href="x" src="x" alt="x" aria-label="x"></p>';
+  const output = extractCanonicalText(unit.repeat(10000), { baseUrl: 'https://example.com/' });
+  assertEq(output.length, 1039999);
 });
 
 await check('decodeCanonicalBase64 rejects padded and base64url forms', () => {

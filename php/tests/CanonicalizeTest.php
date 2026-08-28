@@ -114,6 +114,20 @@ class CanonicalizeTest extends TestCase
         $this->assertStringContainsString('   ', $result);
     }
 
+    public function testRejectsMalformedUtf8Source(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('parser-profile-unsupported');
+        Canonicalize::normalizeText("bad\xFF");
+    }
+
+    public function testSourceLimitPrecedesMalformedUtf8Classification(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('resource-limit-exceeded');
+        Canonicalize::normalizeText(str_repeat("\xFF", 1024 * 1024 + 1));
+    }
+
     /** @dataProvider malformedFragmentProvider */
     public function testRejectsParserAmbiguities(string $html, string $reason): void
     {
@@ -186,5 +200,24 @@ class CanonicalizeTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('attribute-canonicalization-failed');
         Canonicalize::extractCanonicalText('<p>text</p>', false, 'not a URL');
+    }
+
+    public function testDecimalNumericClaimNamesRemainValid(): void
+    {
+        $this->assertSame(
+            "0:zero\n1:one\n",
+            Canonicalize::canonicalizeClaims(['1' => 'one', '0' => 'zero'])
+        );
+    }
+
+    public function testOutputLimitAppliesAfterFinalization(): void
+    {
+        $unit = '<p href="x" src="x" alt="x" aria-label="x"></p>';
+        $output = Canonicalize::extractCanonicalText(
+            str_repeat($unit, 10000),
+            false,
+            'https://example.com/'
+        );
+        $this->assertSame(1039999, strlen($output));
     }
 }
