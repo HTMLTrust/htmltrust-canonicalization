@@ -43,6 +43,7 @@ jobs:
             npm init -y
             npm install "$RUNNER_TEMP/root-pack/"*.tgz --ignore-scripts --no-audit --no-fund
             node --input-type=module -e 'import("@htmltrust/canonicalization").then(({ normalizeText }) => { if (normalizeText("A—B") !== "A-B") process.exit(1); })'
+            node --input-type=module -e 'import("@htmltrust/canonicalization/rust-wasm").then(({ initializeRustWasm }) => { if (typeof initializeRustWasm !== "function") process.exit(1); })'
           )
 
           (
@@ -50,6 +51,7 @@ jobs:
             npm init -y
             npm install "$RUNNER_TEMP/javascript-pack/"*.tgz --ignore-scripts --no-audit --no-fund
             node --input-type=module -e 'import("@htmltrust/canonicalization").then(({ normalizeText }) => { if (normalizeText("A—B") !== "A-B") process.exit(1); })'
+            node --input-type=module -e 'import("@htmltrust/canonicalization/rust-wasm").then(({ initializeRustWasm }) => { if (typeof initializeRustWasm !== "function") process.exit(1); })'
           )
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -58,6 +60,9 @@ jobs:
           path: |
             javascript/index.js
             javascript/index.d.ts
+            javascript/rust-wasm.js
+            javascript/rust-wasm.d.ts
+            javascript/README.md
             javascript/package.json
 
   go:
@@ -100,7 +105,8 @@ jobs:
         with:
           name: go-package
           path: |
-            go/canonicalize.go
+            go/*.go
+            go/README.md
             go/go.mod
             go/go.sum
 
@@ -130,6 +136,7 @@ jobs:
           name: php-package
           path: |
             php/src/
+            php/README.md
             php/composer.json
 
   python:
@@ -165,11 +172,48 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: "1.86"
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml -- --check
+          cargo fmt --manifest-path ffi/Cargo.toml -- --check
 
       - name: Run tests
         run: |
           cargo test --locked --manifest-path rust/Cargo.toml
           cargo test --locked --manifest-path ffi/Cargo.toml
+
+      - name: Run Clippy
+        run: |
+          cargo clippy --locked --all-targets --manifest-path rust/Cargo.toml -- -D warnings
+          cargo clippy --locked --all-targets --manifest-path ffi/Cargo.toml -- -D warnings
+
+  shared-core:
+    name: Rust shared-core adapters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The Compose pipeline builds one pinned Rust/WASM artifact set, then
+      # validates it through Node, Python, Go, and PHP runtimes.
+      - name: Run shared-core Docker validation
+        env:
+          HTMLTRUST_CARGO_TARGET_ROOT: ${{ runner.temp }}/cargo-targets/htmltrust-shared-core
+          HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT: ${{ runner.temp }}/htmltrust-shared-core-artifacts
+        run: ./scripts/test-in-docker.sh --shared-core-only
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-shared-core-linux-amd64
+          path: |
+            ${{ runner.temp }}/htmltrust-shared-core-artifacts/libhtmltrust_canonicalization_ffi.so
+            ${{ runner.temp }}/htmltrust-shared-core-artifacts/libhtmltrust_canonicalization_ffi.a
+            ${{ runner.temp }}/htmltrust-shared-core-artifacts/htmltrust_canonicalization.h
+            ${{ runner.temp }}/htmltrust-shared-core-artifacts/MANIFEST.txt
+            ${{ runner.temp }}/htmltrust-shared-core-artifacts/wasm-node/
 
   conformance:
     name: Cross-language conformance

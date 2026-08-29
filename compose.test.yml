@@ -76,6 +76,111 @@ services:
       - rust_cache:/cache
       - ${HTMLTRUST_CARGO_TARGET_MOUNT:-rust_target}:/cargo-target
 
+  shared-core-build:
+    build:
+      context: .
+      dockerfile: .docker/shared-core/Dockerfile
+    platform: linux/amd64
+    working_dir: /workspace
+    command: ["bash", "/workspace/scripts/build-shared-core-artifacts.sh"]
+    environment:
+      CARGO_HOME: /cargo-home
+      CARGO_TERM_COLOR: always
+      HTMLTRUST_SHARED_CORE_ARTIFACTS: /artifacts
+      HTMLTRUST_SHARED_CORE_NATIVE_TARGET: /cargo-target-native
+      HTMLTRUST_SHARED_CORE_WASM_TARGET: /cargo-target-wasm
+    volumes:
+      - .:/workspace:ro
+      - shared_core_cargo_home:/cargo-home
+      - ${HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT:-shared_core_artifacts}:/artifacts
+      - ${HTMLTRUST_SHARED_CORE_NATIVE_TARGET_MOUNT:-/mnt/bulk/cargo-targets/htmltrust-canonicalization/shared-core-native}:/cargo-target-native
+      - ${HTMLTRUST_SHARED_CORE_WASM_TARGET_MOUNT:-/mnt/bulk/cargo-targets/htmltrust-canonicalization/shared-core-wasm}:/cargo-target-wasm
+
+  shared-core-node:
+    image: node:22-bookworm@sha256:87a4f951f28b85d189df365d24c479d3bdb70be77c1ff5c9029db2ef67e251ac
+    platform: linux/amd64
+    working_dir: /workspace
+    command: >-
+      sh -c "npm ci --ignore-scripts --no-audit --no-fund
+      && node --test javascript/rust-wasm.test.js
+      && node scripts/run-shared-core-node.mjs
+      && mkdir -p /cache/pack /cache/install
+      && npm pack --pack-destination /cache/pack
+      && cd /cache/install
+      && npm init -y
+      && npm install /cache/pack/*.tgz --ignore-scripts --no-audit --no-fund
+      && cd /workspace
+      && env HTMLTRUST_NODE_ADAPTER_PATH=/cache/install/node_modules/@htmltrust/canonicalization/javascript/rust-wasm.js
+      node scripts/run-shared-core-node.mjs"
+    environment:
+      HTMLTRUST_WASM_PKG: /artifacts/wasm-node/htmltrust_canonicalization_ffi.js
+    volumes:
+      - .:/workspace:ro
+      - ${HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT:-shared_core_artifacts}:/artifacts:ro
+      - shared_core_node_modules:/workspace/node_modules
+      - shared_core_npm_cache:/root/.npm
+      - shared_core_node_cache:/cache
+
+  shared-core-python:
+    image: python:3.12-bookworm@sha256:9bbdaa0482ba166a4aa36b03162892a871c269311817cf7132db0922d6c7e91d
+    platform: linux/amd64
+    working_dir: /workspace
+    command: >-
+      sh -c "mkdir -p /build/python /cache/tmp
+      && cp -a python/. /build/python/
+      && TMPDIR=/cache/tmp python -m pip install --disable-pip-version-check
+      --no-warn-script-location '/build/python[dev]'
+      && bash scripts/run-shared-core-adapter-tests.sh python"
+    environment:
+      PIP_CACHE_DIR: /cache/pip
+      HTMLTRUST_RUST_CORE_LIB: /artifacts/libhtmltrust_canonicalization_ffi.so
+      HTMLTRUST_RUST_CORE_WRONG_ABI_LIB: /artifacts/test-fixtures/libhtmltrust_shared_core_wrong_abi.so
+      HTMLTRUST_RUST_CORE_MISSING_OPERATION_LIB: /artifacts/test-fixtures/libhtmltrust_shared_core_missing_operation.so
+      HTMLTRUST_PYTHON_PACKAGE_MODE: installed
+    volumes:
+      - .:/workspace:ro
+      - ${HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT:-shared_core_artifacts}:/artifacts:ro
+      - shared_core_python_cache:/cache
+
+  shared-core-go:
+    image: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
+    platform: linux/amd64
+    working_dir: /workspace
+    command: ["bash", "/workspace/scripts/run-shared-core-adapter-tests.sh", "go"]
+    environment:
+      CGO_ENABLED: "1"
+      GOCACHE: /cache/build
+      GOMODCACHE: /cache/modules
+      HTMLTRUST_RUST_CORE_LIB: /artifacts/libhtmltrust_canonicalization_ffi.so
+      HTMLTRUST_RUST_CORE_WRONG_ABI_LIB: /artifacts/test-fixtures/libhtmltrust_shared_core_wrong_abi.so
+      HTMLTRUST_RUST_CORE_MISSING_OPERATION_LIB: /artifacts/test-fixtures/libhtmltrust_shared_core_missing_operation.so
+    volumes:
+      - .:/workspace:ro
+      - ${HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT:-shared_core_artifacts}:/artifacts:ro
+      - shared_core_go_cache:/cache
+
+  shared-core-php:
+    build:
+      context: .
+      dockerfile: .docker/shared-core-php.Dockerfile
+    platform: linux/amd64
+    working_dir: /workspace
+    command: >-
+      sh -c "composer install --working-dir=php --no-interaction --prefer-dist
+      --no-progress
+      && bash scripts/run-shared-core-adapter-tests.sh php"
+    environment:
+      COMPOSER_CACHE_DIR: /cache/composer
+      COMPOSER_ROOT_VERSION: 0.3.0
+      HTMLTRUST_RUST_CORE_LIB: /artifacts/libhtmltrust_canonicalization_ffi.so
+      HTMLTRUST_RUST_CORE_WRONG_ABI_LIB: /artifacts/test-fixtures/libhtmltrust_shared_core_wrong_abi.so
+      HTMLTRUST_RUST_CORE_MISSING_OPERATION_LIB: /artifacts/test-fixtures/libhtmltrust_shared_core_missing_operation.so
+    volumes:
+      - .:/workspace:ro
+      - ${HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT:-shared_core_artifacts}:/artifacts:ro
+      - shared_core_php_vendor:/workspace/php/vendor
+      - shared_core_php_cache:/cache
+
 volumes:
   javascript_modules:
   npm_cache:
@@ -85,3 +190,12 @@ volumes:
   python_cache:
   rust_cache:
   rust_target:
+  shared_core_cargo_home:
+  shared_core_artifacts:
+  shared_core_node_modules:
+  shared_core_npm_cache:
+  shared_core_node_cache:
+  shared_core_python_cache:
+  shared_core_go_cache:
+  shared_core_php_vendor:
+  shared_core_php_cache:

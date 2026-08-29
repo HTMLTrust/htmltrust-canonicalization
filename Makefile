@@ -5,12 +5,14 @@
 # under `conformance/fixtures/`. `make conformance` exercises every
 # runnable language.
 
-.PHONY: test-docker conformance conformance-update conformance-js conformance-go \
+.PHONY: test-docker test-independent test-shared-core conformance conformance-update conformance-js conformance-go \
         conformance-php conformance-python conformance-rust help
 
 help:
 	@echo "Targets:"
-	@echo "  test-docker         Test all five bindings in isolated containers."
+	@echo "  test-docker         Test independent bindings and shared-core adapters."
+	@echo "  test-independent    Test the five independent binding implementations."
+	@echo "  test-shared-core    Build and validate Rust core adapters."
 	@echo "  conformance         Run every per-language conformance runner."
 	@echo "  conformance-update  Regenerate fixture 'expected' fields from"
 	@echo "                      the current Python+Rust output."
@@ -23,13 +25,18 @@ conformance:
 test-docker:
 	./scripts/test-in-docker.sh
 
+test-independent:
+	./scripts/test-in-docker.sh --independent-only
+
+test-shared-core:
+	./scripts/test-in-docker.sh --shared-core-only
+
 # Regenerate fixture expected fields. Run each available language with
 # --update; later runs overwrite earlier ones if they disagree, which
 # is what you want -- the last language to run is the source of truth.
 #
-# We run Rust last because it's the only non-Python language that
-# implements extract/ and claims/; if you want Python to win, swap the
-# order in run-all.sh's language list.
+# Every binding implements all four suites. Rust runs last, so update mode uses
+# the Rust output when implementations disagree.
 conformance-update:
 	./conformance/run-all.sh --update
 
