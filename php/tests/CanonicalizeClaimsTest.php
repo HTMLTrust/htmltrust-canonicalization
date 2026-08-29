@@ -31,6 +31,22 @@ class CanonicalizeClaimsTest extends TestCase
         Canonicalize::canonicalizeClaims(['count' => 42]);
     }
 
+    /** @dataProvider invalidUtf8ClaimProvider */
+    public function testRejectsInvalidUtf8ClaimFieldsAsMalformed(array $claims): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('claim-malformed');
+        Canonicalize::canonicalizeClaims($claims);
+    }
+
+    public static function invalidUtf8ClaimProvider(): array
+    {
+        return [
+            'invalid name' => [["bad\xFF" => 'value']],
+            'invalid value' => [['name' => "bad\xFF"]],
+        ];
+    }
+
     public function testEmptyClaimsProducesEmptyString(): void
     {
         $this->assertSame('', Canonicalize::canonicalizeClaims([]));

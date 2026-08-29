@@ -417,6 +417,11 @@ def _validate_base_url(base_url: str | None) -> str | None:
     if base_url is None or base_url == "":
         return None
     try:
+        if len(base_url.encode("utf-8", "strict")) > _MAX_SOURCE_BYTES:
+            raise ValueError("resource-limit-exceeded")
+    except UnicodeEncodeError as exc:
+        raise ValueError("attribute-canonicalization-failed") from exc
+    try:
         base = URL(base_url)
     except Exception as exc:
         raise ValueError("attribute-canonicalization-failed") from exc

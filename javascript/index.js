@@ -510,6 +510,9 @@ function hasSelfClosingFlag(tag) {
 
 function validateBaseURL(raw) {
   if (raw == null || raw === "") return undefined;
+  if (utf8Length(raw) > MAX_RESOURCE_BYTES) {
+    throw new Error("resource-limit-exceeded");
+  }
   let url;
   try {
     url = new URL(raw);
@@ -580,6 +583,8 @@ export function canonicalizeClaims(claims) {
   const entries = Object.entries(claims)
     .map(([name, value]) => {
       if (typeof value !== "string") throw new Error("claim-malformed");
+      assertUnicodeScalarString(name, "claim-malformed");
+      assertUnicodeScalarString(value, "claim-malformed");
       return [normalizeText(name).trim(), normalizeText(value).trim()];
     })
     .map(([name, value]) => {

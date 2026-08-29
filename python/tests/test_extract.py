@@ -132,6 +132,17 @@ def test_parser_preflight_rejects_invalid_utf8_surrogate():
         extract_canonical_text("<p>bad\ud800</p>")
 
 
+@pytest.mark.parametrize("codepoint", [0x00, 0x01, 0x08, 0x0B, 0x0E, 0x1F, 0x7F, 0x80, 0x9F])
+def test_parser_preflight_rejects_unsupported_html_controls(codepoint):
+    with pytest.raises(ValueError, match="parser-profile-unsupported"):
+        extract_canonical_text(f"<p>a{chr(codepoint)}b</p>")
+
+
+@pytest.mark.parametrize("codepoint", [0x09, 0x0A, 0x0C, 0x0D])
+def test_parser_preflight_accepts_html_whitespace_controls(codepoint):
+    assert extract_canonical_text(f"<p>a{chr(codepoint)}b</p>") == "a b"
+
+
 def test_colon_qualified_elements_count_toward_depth_limit():
     nested = "".join("<x:y>" for _ in range(257))
     closing = "".join("</x:y>" for _ in range(257))
@@ -160,6 +171,14 @@ def test_relative_url_no_base_fails():
 def test_invalid_base_url_fails_without_url_attributes():
     with pytest.raises(ValueError, match="attribute-canonicalization-failed"):
         extract_canonical_text("<p>x</p>", base_url="not a URL")
+
+
+def test_oversized_base_url_fails_before_url_parsing():
+    with pytest.raises(ValueError, match="resource-limit-exceeded"):
+        extract_canonical_text(
+            "<p>x</p>",
+            base_url="not a URL" + "x" * (1024 * 1024),
+        )
 
 
 def test_output_limit_applies_after_finalization():

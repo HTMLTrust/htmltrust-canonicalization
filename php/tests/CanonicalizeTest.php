@@ -128,6 +128,40 @@ class CanonicalizeTest extends TestCase
         Canonicalize::normalizeText(str_repeat("\xFF", 1024 * 1024 + 1));
     }
 
+    /** @dataProvider unsupportedHtmlControlProvider */
+    public function testRejectsUnsupportedHtmlParserControls(string $control): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('parser-profile-unsupported');
+        Canonicalize::extractCanonicalText('<p>a' . $control . 'b</p>');
+    }
+
+    public static function unsupportedHtmlControlProvider(): array
+    {
+        return array_map(static fn (int $codePoint): array => [self::unicodeCharacter($codePoint)], [
+            0x00, 0x01, 0x08, 0x0B, 0x0E, 0x1F, 0x7F, 0x80, 0x9F,
+        ]);
+    }
+
+    /** @dataProvider acceptedHtmlWhitespaceControlProvider */
+    public function testAcceptsHtmlWhitespaceParserControls(string $control): void
+    {
+        $this->assertSame('a b', Canonicalize::extractCanonicalText('<p>a' . $control . 'b</p>'));
+    }
+
+    public static function acceptedHtmlWhitespaceControlProvider(): array
+    {
+        return array_map(static fn (int $codePoint): array => [chr($codePoint)], [0x09, 0x0A, 0x0C, 0x0D]);
+    }
+
+    private static function unicodeCharacter(int $codePoint): string
+    {
+        if ($codePoint < 0x80) {
+            return chr($codePoint);
+        }
+        return pack('C2', 0xC0 | ($codePoint >> 6), 0x80 | ($codePoint & 0x3F));
+    }
+
     /** @dataProvider malformedFragmentProvider */
     public function testRejectsParserAmbiguities(string $html, string $reason): void
     {
@@ -200,6 +234,13 @@ class CanonicalizeTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('attribute-canonicalization-failed');
         Canonicalize::extractCanonicalText('<p>text</p>', false, 'not a URL');
+    }
+
+    public function testOversizedBaseUrlFailsBeforeUrlParsing(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('resource-limit-exceeded');
+        Canonicalize::extractCanonicalText('<p>text</p>', false, 'not a URL' . str_repeat('x', 1024 * 1024));
     }
 
     public function testDecimalNumericClaimNamesRemainValid(): void

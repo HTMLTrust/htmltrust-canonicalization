@@ -271,6 +271,7 @@ class Canonicalize
         // accepted merely because this fragment has no URL-bearing element.
         $baseUrl = self::validateBaseUrl($baseUrl);
         if ($html === '') return '';
+        $html = self::prepareHtmlForDom($html);
         $doc = new \DOMDocument('1.0', 'UTF-8');
         $old = libxml_use_internal_errors(true);
         // libxml's HTML parser otherwise treats the first fragment element as
@@ -293,6 +294,9 @@ class Canonicalize
     {
         if (strlen($html) > self::MAX_RESOURCE_BYTES || preg_match('//u', $html) !== 1) {
             throw new \InvalidArgumentException(strlen($html) > self::MAX_RESOURCE_BYTES ? 'resource-limit-exceeded' : 'parser-profile-unsupported');
+        }
+        if (preg_match('/[\x{0000}-\x{0008}\x{000B}\x{000E}-\x{001F}\x{007F}-\x{009F}]/u', $html) === 1) {
+            throw new \InvalidArgumentException('parser-profile-unsupported');
         }
         // Keep raw-text bodies out of the source-level checks. The former
         // implementation used a lazy body regex with quoted-attribute
@@ -393,6 +397,12 @@ class Canonicalize
         if ($stack) {
             throw new \InvalidArgumentException('parser-profile-unsupported');
         }
+    }
+
+    private static function prepareHtmlForDom(string $html): string
+    {
+        // HTML treats form feed as whitespace, but libxml drops it from text.
+        return str_replace("\x0C", ' ', $html);
     }
 
     /**
@@ -693,6 +703,9 @@ class Canonicalize
         if ($baseUrl === null || $baseUrl === '') {
             return null;
         }
+        if (strlen($baseUrl) > self::MAX_RESOURCE_BYTES) {
+            throw new \InvalidArgumentException('resource-limit-exceeded');
+        }
         try {
             $base = \Uri\WhatWg\Url::parse($baseUrl);
         } catch (\Throwable $e) {
@@ -839,6 +852,9 @@ class Canonicalize
             if ((!is_string($name) && !is_int($name)) || !is_string($value)) {
                 throw new \InvalidArgumentException('claim-malformed');
             }
+            if (preg_match('//u', (string) $name) !== 1 || preg_match('//u', $value) !== 1) {
+                throw new \InvalidArgumentException('claim-malformed');
+            }
             $normName = trim(self::normalizeText((string) $name));
             $normValue = trim(self::normalizeText($value));
             if (strlen($normName) > 4096 || strlen($normValue) > 4096) {
@@ -878,6 +894,7 @@ class Canonicalize
     {
         if ($html === '') return [];
         self::preflightHtmlSource($html);
+        $html = self::prepareHtmlForDom($html);
         $doc = new \DOMDocument('1.0', 'UTF-8');
         @$doc->loadHTML('<?xml encoding="UTF-8">' . $html, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
         $section = null;

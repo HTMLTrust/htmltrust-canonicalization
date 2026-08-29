@@ -157,6 +157,16 @@ await check('canonicalizeClaims rejects non-string values', () => {
   assert(threw, 'expected non-string claim value to fail');
 });
 
+await check('canonicalizeClaims rejects lone surrogates as claim-malformed', () => {
+  for (const claims of [{ 'bad\ud800': 'value' }, { bad: 'bad\ud800' }]) {
+    let threw = false;
+    try { canonicalizeClaims(claims); } catch (error) {
+      threw = String(error) === 'Error: claim-malformed';
+    }
+    assert(threw, 'lone-surrogate claim fields must fail as claim-malformed');
+  }
+});
+
 await check('extractClaimsFromSignedSection includes all direct child meta only', () => {
   const claims = extractClaimsFromSignedSection(`
     <signed-section>
@@ -215,6 +225,27 @@ await check('extractCanonicalText rejects malformed comment bodies', () => {
     threw = String(error).includes('parser-profile-unsupported');
   }
   assert(threw, 'double hyphen in a comment must be rejected');
+});
+
+await check('extractCanonicalText rejects unsupported HTML parser controls', () => {
+  for (const codePoint of [0x00, 0x01, 0x08, 0x0B, 0x0E, 0x1F, 0x7F, 0x80, 0x9F]) {
+    let threw = false;
+    try { extractCanonicalText(`<p>a${String.fromCodePoint(codePoint)}b</p>`); } catch (error) {
+      threw = String(error).includes('parser-profile-unsupported');
+    }
+    assert(threw, `U+${codePoint.toString(16).padStart(4, '0')} must be rejected`);
+  }
+  for (const codePoint of [0x09, 0x0A, 0x0C, 0x0D]) {
+    assertEq(extractCanonicalText(`<p>a${String.fromCodePoint(codePoint)}b</p>`), 'a b');
+  }
+});
+
+await check('extractCanonicalText enforces the base URL byte ceiling before URL parsing', () => {
+  let threw = false;
+  try { extractCanonicalText('<p>x</p>', { baseUrl: 'not a URL' + 'x'.repeat(1024 * 1024) }); } catch (error) {
+    threw = String(error).includes('resource-limit-exceeded');
+  }
+  assert(threw, 'oversized base URL must report the resource limit');
 });
 
 await check('extractCanonicalText bounds malformed quoted tag scanning', () => {

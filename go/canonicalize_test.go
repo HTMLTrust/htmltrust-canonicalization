@@ -188,6 +188,19 @@ func TestCanonicalizeClaimsNormalizesValues(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeClaimsRejectsInvalidUTF8FieldsAsMalformed(t *testing.T) {
+	for name, claims := range map[string]map[string]string{
+		"name":  {string([]byte{'b', 'a', 'd', 0xff}): "value"},
+		"value": {"name": string([]byte{'b', 'a', 'd', 0xff})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := CanonicalizeClaims(claims); err == nil || err.Error() != "claim-malformed" {
+				t.Fatalf("CanonicalizeClaims error = %v, want bare claim-malformed", err)
+			}
+		})
+	}
+}
+
 func TestSigningProfileV1LocationAndTimestamp(t *testing.T) {
 	location, err := DeriveSigningLocationV1("HTTPS://BÜCHER.EXAMPLE:443/a/../article?q=1#part", "url")
 	if err != nil || location != "https://xn--bcher-kva.example/article?q=1" {

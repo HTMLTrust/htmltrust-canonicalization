@@ -19,6 +19,10 @@ _MAX_CLAIM_BYTES = 4 * 1024
 
 
 def _claim_field(value: str) -> str:
+    try:
+        value.encode("utf-8", "strict")
+    except UnicodeEncodeError as exc:
+        raise ValueError("claim-malformed") from exc
     value = normalize_text(value).strip()
     if len(value.encode("utf-8")) > _MAX_CLAIM_BYTES:
         raise ValueError("resource-limit-exceeded")

@@ -185,6 +185,11 @@ func firstSignedSectionNode(node *htmlpkg.Node) *htmlpkg.Node {
 // Keep a strict source preflight so repaired trees cannot enter the portable
 // profile silently.
 func validatePortableHTML(source string) error {
+	for _, r := range source {
+		if (r >= 0x00 && r <= 0x08) || r == 0x0b || (r >= 0x0e && r <= 0x1f) || (r >= 0x7f && r <= 0x9f) {
+			return fmt.Errorf("parser-profile-unsupported")
+		}
+	}
 	stack := []string{}
 	t := htmlpkg.NewTokenizer(strings.NewReader(source))
 	for {
@@ -375,6 +380,9 @@ func CanonicalizeClaims(claims map[string]string) (string, error) {
 	entries := make([]entry, 0, len(claims))
 	seen := make(map[string]bool, len(claims))
 	for k, v := range claims {
+		if !utf8.ValidString(k) || !utf8.ValidString(v) {
+			return "", fmt.Errorf("claim-malformed")
+		}
 		name, err := NormalizeChecked(k)
 		if err != nil {
 			return "", err
@@ -486,6 +494,9 @@ func appendAttributeRecords(parts *[]string, elementName string, attrs map[strin
 func parseBaseURL(raw string) (*whatwgurl.Url, error) {
 	if raw == "" {
 		return nil, nil
+	}
+	if len(raw) > maxResourceBytes {
+		return nil, fmt.Errorf("resource-limit-exceeded")
 	}
 	base, err := whatwgurl.Parse(raw)
 	if err != nil {

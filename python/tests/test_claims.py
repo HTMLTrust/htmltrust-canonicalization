@@ -50,6 +50,15 @@ def test_rejects_non_string_value():
         canonicalize_claims({"count": 42})  # type: ignore[dict-item]
 
 
+@pytest.mark.parametrize(
+    "claims",
+    [{"bad\ud800": "value"}, {"bad": "bad\ud800"}],
+)
+def test_rejects_lone_surrogate_claim_fields_as_malformed(claims):
+    with pytest.raises(ValueError, match="^claim-malformed$"):
+        canonicalize_claims(claims)
+
+
 def test_rejects_non_mapping():
     with pytest.raises(TypeError):
         canonicalize_claims([("a", "b")])  # type: ignore[arg-type]

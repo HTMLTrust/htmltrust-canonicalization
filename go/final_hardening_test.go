@@ -102,6 +102,39 @@ func TestParserPreflightRejectsCommentsAndDeclarations(t *testing.T) {
 	}
 }
 
+func TestParserPreflightRejectsUnsupportedHTMLControls(t *testing.T) {
+	for _, codePoint := range []rune{0x00, 0x01, 0x08, 0x0b, 0x0e, 0x1f, 0x7f, 0x80, 0x9f} {
+		input := fmt.Sprintf("<p>a%cb</p>", codePoint)
+		if _, err := ExtractCanonicalText(input); err == nil || !strings.Contains(err.Error(), "parser-profile-unsupported") {
+			t.Errorf("ExtractCanonicalText(U+%04X) error = %v, want parser-profile-unsupported", codePoint, err)
+		}
+	}
+	for _, codePoint := range []rune{0x09, 0x0a, 0x0c, 0x0d} {
+		input := fmt.Sprintf("<p>a%cb</p>", codePoint)
+		if got, err := ExtractCanonicalText(input); err != nil || got != "a b" {
+			t.Errorf("ExtractCanonicalText(U+%04X) = %q, %v; want a b", codePoint, got, err)
+		}
+	}
+}
+
+func TestOversizedBaseURLFailsBeforeURLParsing(t *testing.T) {
+	base := "not a URL" + strings.Repeat("x", maxResourceBytes)
+	if _, err := ExtractCanonicalText("<p>x</p>", Options{BaseURL: base}); err == nil || !strings.Contains(err.Error(), "resource-limit-exceeded") {
+		t.Fatalf("oversized base URL error = %v, want resource-limit-exceeded", err)
+	}
+}
+
+func TestCanonicalizeClaimsRejectsInvalidUTF8AsMalformed(t *testing.T) {
+	for _, claims := range []map[string]string{
+		{string([]byte{0xff}): "value"},
+		{"name": string([]byte{0xff})},
+	} {
+		if _, err := CanonicalizeClaims(claims); err == nil || err.Error() != "claim-malformed" {
+			t.Fatalf("invalid UTF-8 claims error = %v, want claim-malformed", err)
+		}
+	}
+}
+
 func TestExtractionRejectsInvalidUTF8(t *testing.T) {
 	if _, err := ExtractCanonicalText(string([]byte{'<', 'p', '>', 0xff, '<', '/', 'p', '>'})); err == nil || !strings.Contains(err.Error(), "parser-profile-unsupported") {
 		t.Fatalf("invalid UTF-8 extraction error = %v, want parser-profile-unsupported", err)
