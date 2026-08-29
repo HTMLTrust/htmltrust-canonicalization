@@ -8,6 +8,27 @@ JavaScript, Go, PHP, and Rust bindings.
 Version: `0.3.0` release candidate
 Python: 3.10 or newer
 
+## Optional Rust shared-core adapter
+
+`RustCore` calls the same Rust implementation used by the native C ABI. Pass an
+exact absolute path to the shared library. The constructor checks ABI version 1 and the
+required symbols before returning a usable adapter:
+
+```python
+from htmltrust_canonicalization import RustCore
+
+core = RustCore("/opt/htmltrust/libhtmltrust_canonicalization_ffi.so")
+canonical = core.normalize_text("A—B")
+```
+
+From the repository root, `make test-shared-core` builds the current Linux
+x86-64 library, tests this adapter, and prints the artifact directory.
+
+The initial validation lane supports Linux x86-64. The independent Python
+functions remain available for compatibility checks and environments without a
+Rust artifact. See the [shared-core guide](../docs/RUST-SHARED-CORE.md) for
+artifact pinning, ownership, and release requirements.
+
 ## Test a fresh checkout
 
 From the repository root, Docker runs the Python unit tests and every shared
@@ -52,8 +73,8 @@ serializer behavior affects signed bytes.
   JSON document with duplicate-key detection and IEEE 754 number handling.
 
 Each entry point is deterministic and performs no network or file I/O. Text,
-HTML, and JSON inputs are limited to 1 MiB. A limit breach raises
-`ValueError("resource-limit-exceeded")`.
+HTML, JSON, and nonempty base URL inputs are limited to 1 MiB. A limit breach
+raises `ValueError("resource-limit-exceeded")`.
 
 ## Example
 
@@ -83,6 +104,8 @@ assert payload == '{"a":1e+30,"z":0}'
 Relative `href` and `src` attributes require `base_url`. The v1 safe-URL
 profile accepts HTTPS URLs and rejects credentials, control characters, and
 unsupported schemes.
+
+`base_url=None` and `base_url=''` both mean that no base URL was supplied.
 
 The caller's source-snapshot layer must compute the document base URL using the
 HTML Standard, including any `<base>` element, and pass that resolved URL as

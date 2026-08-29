@@ -8,6 +8,17 @@ bytes from the JavaScript, Go, PHP, Python, and Rust bindings.
 Version: `0.3.0` release candidate
 Rust: 1.86 or newer
 
+## Shared core boundary
+
+The Rust crate is the executable reference for the four `htmltrust-c14n-v1`
+operations. JavaScript, Go, Python, and PHP can call the same implementation
+through the artifacts in [`../ffi/`](../ffi/). Their existing language-native
+implementations remain available as independent compatibility checks.
+
+The [shared-core guide](../docs/RUST-SHARED-CORE.md) describes the ABI, artifact
+pinning, initialization, and release gates. The first native validation lane is
+Linux x86-64. Go requires cgo, and PHP requires its FFI extension.
+
 ## Test a fresh checkout
 
 From the repository root, Docker runs the Rust unit tests, native FFI tests,
@@ -28,12 +39,16 @@ cargo test --locked --manifest-path ffi/Cargo.toml
 
 ## Install
 
-Use the repository while `0.3.0` is under review:
+Use a path dependency while `0.3.0` is under review. Cargo Git dependencies
+cannot address the crate at this repository's `rust/` subdirectory:
 
 ```toml
 [dependencies]
-htmltrust-canonicalization = { git = "https://github.com/HTMLTrust/htmltrust-canonicalization", rev = "<commit>" }
+htmltrust-canonicalization = { path = "../htmltrust-canonicalization/rust" }
 ```
+
+Pin the checkout itself to a reviewed tag or full commit before building an
+application release.
 
 After the crate is published, use the release series:
 
@@ -93,6 +108,12 @@ assert_eq!(claim_bytes, "License:CC-BY-4.0\n");
 
 Relative `href` and `src` attributes require an HTTPS base URL. The safe URL
 profile rejects credentials, control characters, and unsupported schemes.
+An empty base URL is treated as absent. A nonempty base URL has the same 1 MiB
+input ceiling as the source HTML.
+
+HTML parser controls U+0000..U+0008, U+000B, U+000E..U+001F, and
+U+007F..U+009F are rejected as `parser-profile-unsupported`. Horizontal tab,
+line feed, form feed, and carriage return remain accepted whitespace.
 
 The caller's source-snapshot layer must compute the document base URL using the
 HTML Standard, including any `<base>` element, and pass that resolved URL as
@@ -101,11 +122,15 @@ signed URLs are rejected when no base URL is supplied.
 
 ## Native FFI
 
-The `ffi/` crate exposes length-based `*_v1` functions for normalization and
-extraction. Status `0` means success, status `1` returns an allocated UTF-8
-error code, and status `2` reports an invalid pointer. Every valid output
-pointer is cleared before input decoding. Release returned byte buffers with
-`htmltrust_bytes_free`.
+The `ffi/` crate exposes length-based v1 functions for normalization, HTML
+extraction, claims serialization, and JSON canonicalization. Status `0` means
+success, status `1` returns an allocated UTF-8 error code, and status `2`
+reports an invalid pointer. Every valid output pointer is cleared before input
+decoding. Release returned byte buffers with `htmltrust_bytes_free`.
+
+Applications choose the exact absolute native library path and check ABI version 1
+before use. The C declarations are in
+[`../ffi/include/htmltrust_canonicalization.h`](../ffi/include/htmltrust_canonicalization.h).
 
 The normative protocol text is maintained in the
 [HTMLTrust specification](https://github.com/HTMLTrust/htmltrust-spec/tree/main/ietf-draft).
