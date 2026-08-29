@@ -24,7 +24,8 @@
     "root23/php-json-canonicalization": "1.0.1"
   },
   "suggest": {
-    "ext-curl": "Used by the default HttpFetcher for keyid resolution; falls back to file_get_contents when missing."
+    "ext-curl": "Used by the default HttpFetcher for keyid resolution; falls back to file_get_contents when missing.",
+    "ext-ffi": "Required by the optional RustCore shared-library adapter."
   },
   "require-dev": {
     "phpunit/phpunit": "10.5.64"

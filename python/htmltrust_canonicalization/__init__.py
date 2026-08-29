@@ -15,6 +15,7 @@ from ._normalize import normalize_text
 from ._extract import extract_canonical_text
 from ._claims import canonicalize_claims, extract_claims_from_signed_section
 from ._jcs import canonicalize_json_document
+from .rust_core import RustCore, RustCoreError
 
 __all__ = [
     "normalize_text",
@@ -22,6 +23,8 @@ __all__ = [
     "canonicalize_claims",
     "extract_claims_from_signed_section",
     "canonicalize_json_document",
+    "RustCore",
+    "RustCoreError",
 ]
 
 __version__ = "0.3.0"

@@ -9,6 +9,10 @@
     "./portable-authoring": {
       "types": "./javascript/portable-authoring.d.ts",
       "import": "./javascript/portable-authoring.js"
+    },
+    "./rust-wasm": {
+      "types": "./javascript/rust-wasm.d.ts",
+      "import": "./javascript/rust-wasm.js"
     }
   },
   "types": "javascript/index.d.ts",
@@ -28,6 +32,8 @@
     "javascript/entities.js",
     "javascript/portable-authoring.js",
     "javascript/portable-authoring.d.ts",
+    "javascript/rust-wasm.js",
+    "javascript/rust-wasm.d.ts",
     "javascript/bin/portable-authoring.js"
   ],
   "keywords": [

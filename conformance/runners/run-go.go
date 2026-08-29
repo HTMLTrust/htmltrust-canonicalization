@@ -9,7 +9,9 @@
 //	go run conformance/runners/run-go.go           # verify
 //	go run conformance/runners/run-go.go --update  # rewrite `expected`
 //
-// The Go binding covers normalize, extract, and claims fixtures.
+// By default the Go binding covers all four suites with its independent
+// implementation. Set HTMLTRUST_RUST_CORE_LIB to run every suite through the
+// explicitly selected Rust shared-core library instead.
 //
 // Build/run from the repo root, e.g.:
 //
@@ -41,7 +43,7 @@ type fixture struct {
 	Description string          `json:"description"`
 	Input       json.RawMessage `json:"input"`
 	Expected    string          `json:"expected"`
-	BaseURL     string          `json:"baseURL"`
+	BaseURL     *string         `json:"baseURL"`
 	Error       string          `json:"error"`
 	Repeat      int             `json:"repeat"`
 }
@@ -57,27 +59,43 @@ type result struct {
 // reported as SKIP.
 type runner func(fx *fixture) (string, bool, error)
 
-func runNormalize(fx *fixture) (string, bool, error) {
+func runNormalize(fx *fixture, core *canonicalize.RustCore) (string, bool, error) {
 	var s string
 	if err := json.Unmarshal(fx.Input, &s); err != nil {
 		return "", true, fmt.Errorf("input is not a string: %w", err)
 	}
 	s = repeatString(s, fx.Repeat)
-	out, err := canonicalize.NormalizeTextChecked(s)
+	var out string
+	var err error
+	if core != nil {
+		out, err = core.NormalizeText(s, false)
+	} else {
+		out, err = canonicalize.NormalizeTextChecked(s)
+	}
 	return out, true, err
 }
 
-func runExtract(fx *fixture) (string, bool, error) {
+func runExtract(fx *fixture, core *canonicalize.RustCore) (string, bool, error) {
 	var s string
 	if err := json.Unmarshal(fx.Input, &s); err != nil {
 		return "", true, fmt.Errorf("input is not a string: %w", err)
 	}
 	s = repeatString(s, fx.Repeat)
-	out, err := canonicalize.ExtractCanonicalText(s, canonicalize.Options{BaseURL: fx.BaseURL})
+	var out string
+	var err error
+	if core != nil {
+		out, err = core.ExtractCanonicalText(s, false, fx.BaseURL)
+	} else {
+		base := ""
+		if fx.BaseURL != nil {
+			base = *fx.BaseURL
+		}
+		out, err = canonicalize.ExtractCanonicalText(s, canonicalize.Options{BaseURL: base})
+	}
 	return out, true, err
 }
 
-func runClaims(fx *fixture) (string, bool, error) {
+func runClaims(fx *fixture, core *canonicalize.RustCore) (string, bool, error) {
 	var claims map[string]string
 	if err := json.Unmarshal(fx.Input, &claims); err != nil {
 		return "", true, fmt.Errorf("claim-malformed")
@@ -85,17 +103,29 @@ func runClaims(fx *fixture) (string, bool, error) {
 	for name, value := range claims {
 		claims[name] = repeatString(value, fx.Repeat)
 	}
-	out, err := canonicalize.CanonicalizeClaimsStrict(claims)
+	var out string
+	var err error
+	if core != nil {
+		out, err = core.CanonicalizeClaims(claims)
+	} else {
+		out, err = canonicalize.CanonicalizeClaimsStrict(claims)
+	}
 	return out, true, err
 }
 
-func runJCS(fx *fixture) (string, bool, error) {
+func runJCS(fx *fixture, core *canonicalize.RustCore) (string, bool, error) {
 	var s string
 	if err := json.Unmarshal(fx.Input, &s); err != nil {
 		return "", true, fmt.Errorf("input is not a JSON document string: %w", err)
 	}
 	s = repeatString(s, fx.Repeat)
-	out, err := canonicalize.CanonicalizeJSONDocument([]byte(s))
+	var out []byte
+	var err error
+	if core != nil {
+		out, err = core.CanonicalizeJSONDocument([]byte(s))
+	} else {
+		out, err = canonicalize.CanonicalizeJSONDocument([]byte(s))
+	}
 	return string(out), true, err
 }
 
@@ -121,11 +151,24 @@ func main() {
 	}
 	fixturesRoot := filepath.Join(confDir, "fixtures")
 
+	var core *canonicalize.RustCore
+	if libraryPath := os.Getenv("HTMLTRUST_RUST_CORE_LIB"); libraryPath != "" {
+		core, err = canonicalize.NewRustCore(libraryPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "could not open Rust shared core:", err)
+			os.Exit(2)
+		}
+		defer core.Close()
+		fmt.Printf("Mode: shared Rust core (%s)\n", libraryPath)
+	} else {
+		fmt.Println("Mode: independent Go implementation")
+	}
+
 	runners := map[string]runner{
-		"normalize": runNormalize,
-		"extract":   runExtract,
-		"claims":    runClaims,
-		"jcs":       runJCS,
+		"normalize": func(fx *fixture) (string, bool, error) { return runNormalize(fx, core) },
+		"extract":   func(fx *fixture) (string, bool, error) { return runExtract(fx, core) },
+		"claims":    func(fx *fixture) (string, bool, error) { return runClaims(fx, core) },
+		"jcs":       func(fx *fixture) (string, bool, error) { return runJCS(fx, core) },
 	}
 
 	var (

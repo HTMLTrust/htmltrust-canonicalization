@@ -16,6 +16,10 @@
     "./portable-authoring": {
       "types": "./portable-authoring.d.ts",
       "import": "./portable-authoring.js"
+    },
+    "./rust-wasm": {
+      "types": "./rust-wasm.d.ts",
+      "import": "./rust-wasm.js"
     }
   },
   "bin": {
@@ -27,6 +31,8 @@
     "entities.js",
     "portable-authoring.js",
     "portable-authoring.d.ts",
+    "rust-wasm.js",
+    "rust-wasm.d.ts",
     "bin/portable-authoring.js"
   ],
   "keywords": [
