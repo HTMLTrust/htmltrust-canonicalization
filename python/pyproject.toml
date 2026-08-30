@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "htmltrust-canonicalization"
 version = "0.3.0"
-description = "Canonical text normalization and HTML extraction for HTMLTrust signed content. Byte-identical output to the JavaScript, Go, PHP, and Rust bindings."
+description = "Python adapter for the HTMLTrust Rust canonicalization core."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
@@ -23,16 +23,12 @@ classifiers = [
     "Topic :: Text Processing",
     "Topic :: Security :: Cryptography",
 ]
-dependencies = [
-    "beautifulsoup4==4.15.0",
-    "html5lib==1.1",
-    "pywhatwgurl==0.1.2",
-    "rfc8785==0.1.4",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
     "cryptography==50.0.1",
+    "pywhatwgurl==0.1.2",
     "pytest==9.1.1",
 ]
 

@@ -21,7 +21,8 @@ uint32_t htmltrust_abi_version_v1(void);
  * On status 0 or 1, release the output with htmltrust_bytes_free(). A NULL
  * input pointer is valid only when its length is zero. Output pointers are
  * cleared before input decoding. A zero-length base URL means no base URL,
- * regardless of whether its pointer is NULL.
+ * regardless of whether its pointer is NULL. Claim extraction returns a
+ * UTF-8 JSON object containing normalized direct-child claim names and values.
  */
 
 int32_t htmltrust_extract_canonical_text_v1(
@@ -51,6 +52,12 @@ int32_t htmltrust_normalize_text_v1(
 int32_t htmltrust_canonicalize_claims_v1(
     const uint8_t *claims,
     size_t claims_len,
+    uint8_t **out,
+    size_t *out_len);
+
+int32_t htmltrust_extract_claims_from_signed_section_v1(
+    const uint8_t *html,
+    size_t html_len,
     uint8_t **out,
     size_t *out_len);
 

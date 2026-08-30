@@ -4,18 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-MODE="all"
-case "${1:-}" in
-    "") ;;
-    --independent-only) MODE="independent" ;;
-    --shared-core-only) MODE="shared-core" ;;
-    *)
-        echo "Usage: $0 [--independent-only|--shared-core-only]" >&2
-        exit 2
-        ;;
-esac
-if [[ $# -gt 1 ]]; then
-    echo "Usage: $0 [--independent-only|--shared-core-only]" >&2
+RUN_ADAPTERS=1
+if [[ $# -eq 1 && "$1" == "--artifacts-only" ]]; then
+    RUN_ADAPTERS=0
+elif [[ $# -ne 0 ]]; then
+    echo "Usage: $0 [--artifacts-only]" >&2
     exit 2
 fi
 
@@ -79,27 +72,21 @@ for mountpoint in "${MOUNTPOINTS[@]}"; do
     fi
 done
 
-if [[ "$MODE" != "shared-core" ]]; then
-    for service in javascript go php python rust; do
-        echo
-        echo "Running ${service} tests"
-        docker compose --project-name "$COMPOSE_PROJECT" --file "$COMPOSE_FILE" run --build --rm "$service"
-    done
+services=(shared-core-build)
+if [[ "$RUN_ADAPTERS" -eq 1 ]]; then
+    services+=(shared-core-node shared-core-python shared-core-go shared-core-php)
 fi
-
-if [[ "$MODE" != "independent" ]]; then
-    for service in shared-core-build shared-core-node shared-core-python shared-core-go shared-core-php; do
-        echo
-        echo "Running ${service} validation"
-        docker compose --project-name "$COMPOSE_PROJECT" --file "$COMPOSE_FILE" run --build --rm "$service"
-    done
+for service in "${services[@]}"; do
     echo
-    echo "Shared-core artifacts: $HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT"
-fi
+    echo "Running ${service} validation"
+    docker compose --project-name "$COMPOSE_PROJECT" --file "$COMPOSE_FILE" run --build --rm "$service"
+done
+echo
+echo "Shared-core artifacts: $HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT"
 
 echo
-case "$MODE" in
-    all) echo "All independent binding and shared-core validation tests passed." ;;
-    independent) echo "All independent binding tests passed." ;;
-    shared-core) echo "All shared-core validation tests passed." ;;
-esac
+if [[ "$RUN_ADAPTERS" -eq 1 ]]; then
+    echo "All Rust core and adapter validation tests passed."
+else
+    echo "Rust core artifacts built successfully."
+fi

@@ -9,9 +9,8 @@
 //	go run conformance/runners/run-go.go           # verify
 //	go run conformance/runners/run-go.go --update  # rewrite `expected`
 //
-// By default the Go binding covers all four suites with its independent
-// implementation. Set HTMLTRUST_RUST_CORE_LIB to run every suite through the
-// explicitly selected Rust shared-core library instead.
+// HTMLTRUST_RUST_CORE_LIB must name the explicitly selected Rust shared-core
+// library. The runner has no independent canonicalization implementation.
 //
 // Build/run from the repo root, e.g.:
 //
@@ -54,9 +53,9 @@ type result struct {
 	message string
 }
 
-// Per-suite runner: returns (output, implemented, error). `implemented`
-// is false when the binding lacks the function -- the suite is then
-// reported as SKIP.
+// Per-suite runner: returns (output, implemented, error). The maintained
+// Rust-backed runner implements every suite; the flag remains part of the
+// runner contract for uniform result reporting.
 type runner func(fx *fixture) (string, bool, error)
 
 func runNormalize(fx *fixture, core *canonicalize.RustCore) (string, bool, error) {
@@ -65,13 +64,7 @@ func runNormalize(fx *fixture, core *canonicalize.RustCore) (string, bool, error
 		return "", true, fmt.Errorf("input is not a string: %w", err)
 	}
 	s = repeatString(s, fx.Repeat)
-	var out string
-	var err error
-	if core != nil {
-		out, err = core.NormalizeText(s, false)
-	} else {
-		out, err = canonicalize.NormalizeTextChecked(s)
-	}
+	out, err := core.NormalizeText(s, false)
 	return out, true, err
 }
 
@@ -81,17 +74,7 @@ func runExtract(fx *fixture, core *canonicalize.RustCore) (string, bool, error) 
 		return "", true, fmt.Errorf("input is not a string: %w", err)
 	}
 	s = repeatString(s, fx.Repeat)
-	var out string
-	var err error
-	if core != nil {
-		out, err = core.ExtractCanonicalText(s, false, fx.BaseURL)
-	} else {
-		base := ""
-		if fx.BaseURL != nil {
-			base = *fx.BaseURL
-		}
-		out, err = canonicalize.ExtractCanonicalText(s, canonicalize.Options{BaseURL: base})
-	}
+	out, err := core.ExtractCanonicalText(s, false, fx.BaseURL)
 	return out, true, err
 }
 
@@ -103,13 +86,7 @@ func runClaims(fx *fixture, core *canonicalize.RustCore) (string, bool, error) {
 	for name, value := range claims {
 		claims[name] = repeatString(value, fx.Repeat)
 	}
-	var out string
-	var err error
-	if core != nil {
-		out, err = core.CanonicalizeClaims(claims)
-	} else {
-		out, err = canonicalize.CanonicalizeClaimsStrict(claims)
-	}
+	out, err := core.CanonicalizeClaims(claims)
 	return out, true, err
 }
 
@@ -119,13 +96,7 @@ func runJCS(fx *fixture, core *canonicalize.RustCore) (string, bool, error) {
 		return "", true, fmt.Errorf("input is not a JSON document string: %w", err)
 	}
 	s = repeatString(s, fx.Repeat)
-	var out []byte
-	var err error
-	if core != nil {
-		out, err = core.CanonicalizeJSONDocument([]byte(s))
-	} else {
-		out, err = canonicalize.CanonicalizeJSONDocument([]byte(s))
-	}
+	out, err := core.CanonicalizeJSONDocument([]byte(s))
 	return string(out), true, err
 }
 
@@ -151,18 +122,18 @@ func main() {
 	}
 	fixturesRoot := filepath.Join(confDir, "fixtures")
 
-	var core *canonicalize.RustCore
-	if libraryPath := os.Getenv("HTMLTRUST_RUST_CORE_LIB"); libraryPath != "" {
-		core, err = canonicalize.NewRustCore(libraryPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "could not open Rust shared core:", err)
-			os.Exit(2)
-		}
-		defer core.Close()
-		fmt.Printf("Mode: shared Rust core (%s)\n", libraryPath)
-	} else {
-		fmt.Println("Mode: independent Go implementation")
+	libraryPath := os.Getenv("HTMLTRUST_RUST_CORE_LIB")
+	if libraryPath == "" {
+		fmt.Fprintln(os.Stderr, "HTMLTRUST_RUST_CORE_LIB is required")
+		os.Exit(2)
 	}
+	core, err := canonicalize.NewRustCore(libraryPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "could not open Rust shared core:", err)
+		os.Exit(2)
+	}
+	defer core.Close()
+	fmt.Printf("Mode: shared Rust core (%s)\n", libraryPath)
 
 	runners := map[string]runner{
 		"normalize": func(fx *fixture) (string, bool, error) { return runNormalize(fx, core) },

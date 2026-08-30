@@ -8,27 +8,37 @@ missing() {
   exit 2
 }
 
+require_native_artifact() {
+  if [[ -z "${HTMLTRUST_RUST_CORE_LIB:-}" || ! -s "${HTMLTRUST_RUST_CORE_LIB}" ]]; then
+    echo "ERROR shared-core ${language}: HTMLTRUST_RUST_CORE_LIB is missing" >&2
+    exit 2
+  fi
+}
+
 case "$language" in
   python)
+    require_native_artifact
     test -f python/tests/test_rust_core.py || missing
     cp python/tests/test_rust_core.py /cache/test_rust_core.py
     (cd /cache && python -m pytest -q -p no:cacheprovider test_rust_core.py)
     python conformance/runners/run-python.py
     ;;
   go)
+    require_native_artifact
     test -f go/rustcore_test.go || missing
-    (cd go && go test -v -run '^TestRustCore|^TestNewRustCore')
+    (cd go && go test -v ./...)
+    (cd go && CGO_ENABLED=0 go test -v -run '^(TestNative|TestBuildSignatureBinding)' ./...)
     (cd conformance/runners && go run ./run-go.go)
     ;;
   php)
+    require_native_artifact
     test -f php/tests/RustCoreTest.php || missing
-    php php/vendor/bin/phpunit --do-not-cache-result php/tests/RustCoreTest.php
+    composer test --working-dir=php
     php_consumer=/cache/php-consumer
+    rm -rf -- "$php_consumer"
     mkdir -p "$php_consumer"
-    if [[ ! -f "$php_consumer/composer.json" ]]; then
-      (cd "$php_consumer" && composer init \
-        --name=htmltrust/shared-core-consumer --no-interaction)
-    fi
+    (cd "$php_consumer" && composer init \
+      --name=htmltrust/shared-core-consumer --no-interaction)
     (
       cd "$php_consumer"
       composer config --json repositories.htmltrust \

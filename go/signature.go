@@ -86,7 +86,7 @@ func DeriveSigningLocationV1(documentURL, scope string) (string, error) {
 }
 
 // BuildSigningPayloadV1 returns the RFC 8785 bytes fixed by htmltrust-signature-v1.
-func BuildSigningPayloadV1(input SigningProfileV1Input) (string, error) {
+func (r *RustCore) BuildSigningPayloadV1(input SigningProfileV1Input) (string, error) {
 	fields := map[string]string{
 		"contentHash": input.ContentHash, "claimsHash": input.ClaimsHash,
 		"documentURL": input.DocumentURL, "scope": input.Scope, "keyid": input.KeyID,
@@ -115,7 +115,7 @@ func BuildSigningPayloadV1(input SigningProfileV1Input) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	canonical, err := CanonicalizeJSONDocument(raw)
+	canonical, err := r.CanonicalizeJSONDocument(raw)
 	if err != nil {
 		return "", err
 	}

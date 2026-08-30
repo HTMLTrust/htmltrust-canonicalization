@@ -15,11 +15,13 @@
  * The JS binding covers normalize, extract, claims, and strict JCS fixtures.
  */
 
+import { createRequire } from "node:module";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
 
 import * as binding from "../../javascript/index.js";
+import { initializeRustWasm } from "../../javascript/rust-wasm.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -28,6 +30,12 @@ const FIXTURES_ROOT = join(__dirname, "..", "fixtures");
 
 const args = new Set(process.argv.slice(2));
 const UPDATE = args.has("--update");
+const wasmPath = process.env.HTMLTRUST_WASM_PKG;
+if (!wasmPath) {
+  console.error("HTMLTRUST_WASM_PKG is required");
+  process.exit(2);
+}
+initializeRustWasm(createRequire(import.meta.url)(wasmPath));
 
 // Map suite name -> function that runs the binding on the fixture input
 // and returns the produced output string. Returns `null` if the binding

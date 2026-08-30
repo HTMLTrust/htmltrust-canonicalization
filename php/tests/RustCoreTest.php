@@ -67,6 +67,12 @@ final class RustCoreTest extends TestCase
         self::assertSame('A', $core->extractCanonicalText('<p>A</p>', false, 'https://example.com/'));
         self::assertSame("a:1\nz:2\n", $core->canonicalizeClaims(['z' => '2', 'a' => '1']));
         self::assertSame('', $core->canonicalizeClaims([]));
+        self::assertSame(
+            ['author' => 'Ada'],
+            $core->extractClaimsFromSignedSection(
+                '<signed-section><meta name="author" content="Ada"></signed-section>'
+            )
+        );
         self::assertSame('{"a":1,"z":0}', $core->canonicalizeJsonDocument('{"z":0,"a":1}'));
     }
 

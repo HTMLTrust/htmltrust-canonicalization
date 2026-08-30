@@ -5,6 +5,9 @@ import assert from "node:assert/strict";
 import {
   canonicalizeClaims,
   canonicalizeJsonDocument,
+  extractClaimsFromSignedSection,
+  initializeBrowserWasm,
+  initializeNodeWasm,
   extractCanonicalText,
   initializeRustWasm,
   normalizeText,
@@ -32,6 +35,7 @@ test("calls remain synchronous after initialization", () => {
       assert.equal(base, calls === 1 ? "https://example.test/page" : undefined);
       return "hello";
     },
+    extractClaimsFromSignedSection: () => "{}",
     canonicalizeClaims: (document) => `claims:${document}`,
     canonicalizeJsonDocument: (document) => `jcs:${document}`,
   });
@@ -48,29 +52,62 @@ test("rejects a module without the required export", () => {
   assert.throws(() => initializeRustWasm({ abiVersion: () => 1 }), /rust-wasm-module-invalid/);
 });
 
+test("packaged initializers validate supplied generated modules", async () => {
+  const module = {
+    abiVersion: () => 1,
+    normalizeText: () => "",
+    extractCanonicalText: () => "",
+    extractClaimsFromSignedSection: () => "{}",
+    canonicalizeClaims: () => "",
+    canonicalizeJsonDocument: () => "",
+  };
+  assert.equal((await initializeNodeWasm(module)).abiVersion(), 1);
+  assert.equal((await initializeBrowserWasm(module)).abiVersion(), 1);
+
+  let initializerInput;
+  const browserModule = {
+    ...module,
+    normalizeText: () => "wrapped",
+    async default(input) {
+      initializerInput = input;
+      return {
+        abiVersion: () => 1,
+        normalizeText: () => [1, 0, 0, 0],
+      };
+    },
+  };
+  const bytes = new Uint8Array([0]);
+  await initializeBrowserWasm(browserModule, bytes);
+  assert.deepEqual(initializerInput, { module_or_path: bytes });
+  assert.equal(normalizeText("value"), "wrapped");
+});
+
 test("validates the ABI version", () => {
   const module = {
     abiVersion: () => 2,
     normalizeText: () => "",
     extractCanonicalText: () => "",
+    extractClaimsFromSignedSection: () => "{}",
     canonicalizeClaims: () => "",
     canonicalizeJsonDocument: () => "",
   };
   assert.throws(() => initializeRustWasm(module), /rust-wasm-abi-unsupported/);
 });
 
-test("exposes all four operations and v1 whitespace behavior", () => {
+test("exposes all five operations and v1 whitespace behavior", () => {
   initializeRustWasm({
     abiVersion: () => 1,
     normalizeText: (value) => `norm:${value}`,
     extractCanonicalText: () => "extract",
     extractCanonicalTextWithOptions: (html, preserve, base) => `${html}:${preserve}:${base}`,
+    extractClaimsFromSignedSection: () => "{}",
     canonicalizeClaims: (value) => `claims:${value}`,
     canonicalizeJsonDocument: (value) => `jcs:${value}`,
   });
   assert.equal(normalizeText("A—B", {}), "norm:A—B");
   assert.equal(canonicalizeClaims({ z: "1" }), 'claims:{"z":"1"}');
   assert.equal(canonicalizeJsonDocument('{"z":1}'), 'jcs:{"z":1}');
+  assert.deepEqual(extractClaimsFromSignedSection('<signed-section></signed-section>'), {});
   assert.equal(extractCanonicalText("x", { preserveWhitespace: true }), "x:true:undefined");
   assert.throws(() => normalizeText("x", { preserveWhitespace: true }), /rust-wasm-option-unsupported/);
   assert.throws(() => canonicalizeClaims(null), /claim-malformed/);
@@ -83,6 +120,7 @@ test("rejects non-string and lone-surrogate inputs before WASM encoding", () => 
     abiVersion: () => 1,
     normalizeText: () => { calls++; return ""; },
     extractCanonicalText: () => { calls++; return ""; },
+    extractClaimsFromSignedSection: () => { calls++; return "{}"; },
     canonicalizeClaims: () => { calls++; return ""; },
     canonicalizeJsonDocument: () => { calls++; return ""; },
   });
@@ -107,6 +145,7 @@ test("canonicalizeClaims serializes the validated snapshot", () => {
     abiVersion: () => 1,
     normalizeText: () => "",
     extractCanonicalText: () => "",
+    extractClaimsFromSignedSection: () => "{}",
     canonicalizeClaims(value) {
       document = value;
       return "License:CC-BY-4.0\n";
@@ -124,6 +163,10 @@ test("generated Node WASM module passes a real extraction smoke test", { skip: !
   initializeRustWasm(generated);
   assert.equal(normalizeText("A—B", {}), "A-B");
   assert.equal(canonicalizeClaims({ License: "CC-BY-4.0" }), "License:CC-BY-4.0\n");
+  assert.deepEqual(
+    extractClaimsFromSignedSection('<signed-section><meta name="License" content="CC-BY-4.0"></signed-section>'),
+    { License: "CC-BY-4.0" },
+  );
   assert.equal(canonicalizeJsonDocument('{"z":0,"a":1}'), '{"a":1,"z":0}');
   assert.throws(
     () => canonicalizeJsonDocument("{"),

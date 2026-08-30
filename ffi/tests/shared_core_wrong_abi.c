@@ -58,6 +58,17 @@ int32_t htmltrust_canonicalize_claims_v1(
     return invalid_argument(out, out_len);
 }
 
+int32_t htmltrust_extract_claims_from_signed_section_v1(
+    const uint8_t *html,
+    size_t html_len,
+    uint8_t **out,
+    size_t *out_len
+) {
+    (void) html;
+    (void) html_len;
+    return invalid_argument(out, out_len);
+}
+
 int32_t htmltrust_canonicalize_json_document_v1(
     const uint8_t *json,
     size_t json_len,

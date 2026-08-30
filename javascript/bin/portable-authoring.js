@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 
+import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { initializeNodeWasm } from "../rust-wasm.js";
 import {
   preflightPortableDocument,
   wrapSignedSection,
 } from "../portable-authoring.js";
+
+const require = createRequire(import.meta.url);
+const wasmModule = process.env.HTMLTRUST_WASM_PKG
+  ? require(process.env.HTMLTRUST_WASM_PKG)
+  : undefined;
+await initializeNodeWasm(wasmModule);
 
 function usage() {
   console.error("Usage: htmltrust-portable-preflight --url https://example.test/page.html [--wrap] [file|-]");

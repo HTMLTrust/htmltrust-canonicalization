@@ -28,6 +28,9 @@ func (*RustCore) ExtractCanonicalText(string, bool, *string) (string, error) {
 func (*RustCore) CanonicalizeClaims(map[string]string) (string, error) {
 	return "", errors.New("htmltrust Rust core adapter unavailable")
 }
+func (*RustCore) ExtractClaimsFromSignedSection(string) (map[string]string, error) {
+	return nil, errors.New("htmltrust Rust core adapter unavailable")
+}
 func (*RustCore) CanonicalizeJSONDocument([]byte) ([]byte, error) {
 	return nil, errors.New("htmltrust Rust core adapter unavailable")
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // Endorsement is a third-party signed JSON attestation about a specific
@@ -38,17 +37,31 @@ var endorsementFields = map[string]bool{
 	"claim": true, "revokedBy": true,
 }
 
-// UnmarshalJSON preserves extension members so decoding an endorsement does
-// not silently change the document that is subsequently verified. Strict JCS
-// parsing is performed first to reject duplicate members and malformed values
-// before encoding them into the public struct fields.
+// UnmarshalJSON refuses the standard decoder because it has no RustCore
+// receiver and therefore cannot perform the required duplicate-key/JCS
+// validation. Use (*RustCore).DecodeEndorsement for raw signed input.
 func (e *Endorsement) UnmarshalJSON(data []byte) error {
 	if e == nil {
 		return errors.New("cannot unmarshal endorsement into nil receiver")
 	}
-	if _, err := CanonicalizeJSONDocument(data); err != nil {
-		return err
+	return errors.New("endorsement decoding requires RustCore.DecodeEndorsement")
+}
+
+// DecodeEndorsement validates raw JSON with the Rust core before decoding it.
+// Callers that process signed input should use this method so duplicate keys
+// and other JCS-invalid values are rejected by the shared implementation.
+func (r *RustCore) DecodeEndorsement(data []byte) (Endorsement, error) {
+	if _, err := r.CanonicalizeJSONDocument(data); err != nil {
+		return Endorsement{}, err
 	}
+	var endorsement Endorsement
+	if err := decodeEndorsement(data, &endorsement); err != nil {
+		return Endorsement{}, err
+	}
+	return endorsement, nil
+}
+
+func decodeEndorsement(data []byte, e *Endorsement) error {
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(data, &members); err != nil {
 		return err
@@ -182,7 +195,7 @@ func (endorsement Endorsement) signingDocument(includeSignature bool) (map[strin
 
 // BuildEndorsementBinding returns the deterministic JSON signing payload for
 // an endorsement: the endorsement document serialized with signature omitted.
-func BuildEndorsementBinding(endorsement Endorsement) (string, error) {
+func (r *RustCore) BuildEndorsementBinding(endorsement Endorsement) (string, error) {
 	if endorsement.Endorser == "" {
 		return "", errors.New("BuildEndorsementBinding: endorser is required")
 	}
@@ -203,7 +216,7 @@ func BuildEndorsementBinding(endorsement Endorsement) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	canonical, err := CanonicalizeEndorsementDocument(b)
+	canonical, err := r.CanonicalizeEndorsementDocument(b)
 	if err != nil {
 		return "", err
 	}
@@ -213,59 +226,46 @@ func BuildEndorsementBinding(endorsement Endorsement) (string, error) {
 // CanonicalizeEndorsementDocument validates one raw endorsement object,
 // removes its signature member, and returns RFC 8785 canonical bytes. Passing
 // raw JSON lets callers reject duplicate members before object materialization.
-func CanonicalizeEndorsementDocument(document []byte) ([]byte, error) {
-	if len(document) > maxResourceBytes {
-		return nil, fmt.Errorf("resource-limit-exceeded")
+func (r *RustCore) CanonicalizeEndorsementDocument(document []byte) ([]byte, error) {
+	// The first Rust call validates the complete input, including duplicate
+	// members, before Go materializes it into a map.
+	if _, err := r.CanonicalizeJSONDocument(document); err != nil {
+		return nil, err
 	}
-	if !utf8.Valid(document) {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(document, &members); err != nil {
 		return nil, fmt.Errorf("jcs-invalid-json")
 	}
-	value, err := (&strictJSONParser{data: document}).parse()
-	if err != nil {
-		if strings.Contains(err.Error(), "jcs-") || strings.Contains(err.Error(), "resource-limit-exceeded") {
-			return nil, err
-		}
-		return nil, fmt.Errorf("jcs-invalid-json")
-	}
-	if value.kind != 'o' {
+	if members == nil {
 		return nil, fmt.Errorf("endorsement document must be an object")
 	}
-	required := map[string]bool{
-		"endorser": false, "endorsement": false, "algorithm": false, "timestamp": false,
-	}
-	unsigned := value.obj[:0]
-	for _, member := range value.obj {
-		if member.name == "signature" {
-			continue
+	required := []string{"endorser", "endorsement", "algorithm", "timestamp"}
+	for _, name := range required {
+		raw, ok := members[name]
+		if !ok {
+			return nil, fmt.Errorf("endorsement %s must be non-empty", name)
 		}
-		if _, ok := required[member.name]; ok {
-			if member.value.kind != 's' || member.value.str == "" {
-				return nil, fmt.Errorf("endorsement %s must be non-empty", member.name)
-			}
-			required[member.name] = true
-		}
-		unsigned = append(unsigned, member)
-	}
-	for name, present := range required {
-		if !present {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || value == "" {
 			return nil, fmt.Errorf("endorsement %s must be non-empty", name)
 		}
 	}
-	value.obj = unsigned
-	canonical, err := serializeJSON(value)
+	delete(members, "signature")
+	unsigned, err := json.Marshal(members)
 	if err != nil {
 		return nil, err
 	}
-	if len(canonical) > maxResourceBytes {
-		return nil, fmt.Errorf("resource-limit-exceeded")
+	canonical, err := r.CanonicalizeJSONDocument(unsigned)
+	if err != nil {
+		return nil, err
 	}
-	return []byte(canonical), nil
+	return canonical, nil
 }
 
 // VerifyEndorsement resolves the endorser's keyid and verifies the
 // endorsement's signature over the deterministic JSON document with the
 // signature field omitted.
-func VerifyEndorsement(ctx context.Context, endorsement Endorsement, resolvers []KeyResolver) (bool, error) {
+func (r *RustCore) VerifyEndorsement(ctx context.Context, endorsement Endorsement, resolvers []KeyResolver) (bool, error) {
 	if endorsement.Endorser == "" {
 		return false, errors.New("VerifyEndorsement: endorser is required")
 	}
@@ -300,7 +300,7 @@ func VerifyEndorsement(ctx context.Context, endorsement Endorsement, resolvers [
 	if key.Algorithm != "" && !algorithmsCompatible(key.Algorithm, endorsement.Algorithm) {
 		return false, errors.New("VerifyEndorsement: resolved key algorithm does not match endorsement")
 	}
-	message, err := BuildEndorsementBinding(endorsement)
+	message, err := r.BuildEndorsementBinding(endorsement)
 	if err != nil {
 		return false, err
 	}

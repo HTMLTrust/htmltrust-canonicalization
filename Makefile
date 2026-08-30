@@ -3,19 +3,18 @@
 # The cross-language conformance suite is the public contract: every
 # implementation must produce byte-identical output for every fixture
 # under `conformance/fixtures/`. `make conformance` exercises every
-# runnable language.
+# Rust-backed language adapter.
 
-.PHONY: test-docker test-independent test-shared-core conformance conformance-update conformance-js conformance-go \
+.PHONY: test-docker test-shared-core core-artifacts conformance conformance-update conformance-js conformance-go \
         conformance-php conformance-python conformance-rust help
 
 help:
 	@echo "Targets:"
-	@echo "  test-docker         Test independent bindings and shared-core adapters."
-	@echo "  test-independent    Test the five independent binding implementations."
-	@echo "  test-shared-core    Build and validate Rust core adapters."
+	@echo "  test-docker         Build Rust core and test every adapter."
+	@echo "  test-shared-core    Alias for test-docker."
+	@echo "  core-artifacts      Build only the Rust native/WASM artifacts."
 	@echo "  conformance         Run every per-language conformance runner."
-	@echo "  conformance-update  Regenerate fixture 'expected' fields from"
-	@echo "                      the current Python+Rust output."
+	@echo "  conformance-update  Regenerate fixture 'expected' fields from Rust."
 	@echo "  conformance-<lang>  Run a single language's runner (js, go,"
 	@echo "                      php, python, rust)."
 
@@ -25,18 +24,14 @@ conformance:
 test-docker:
 	./scripts/test-in-docker.sh
 
-test-independent:
-	./scripts/test-in-docker.sh --independent-only
-
 test-shared-core:
-	./scripts/test-in-docker.sh --shared-core-only
+	./scripts/test-in-docker.sh
 
-# Regenerate fixture expected fields. Run each available language with
-# --update; later runs overwrite earlier ones if they disagree, which
-# is what you want -- the last language to run is the source of truth.
-#
-# Every binding implements all four suites. Rust runs last, so update mode uses
-# the Rust output when implementations disagree.
+core-artifacts:
+	./scripts/test-in-docker.sh --artifacts-only
+
+# Regenerate fixture expected fields from Rust, then verify all adapters
+# against those values.
 conformance-update:
 	./conformance/run-all.sh --update
 

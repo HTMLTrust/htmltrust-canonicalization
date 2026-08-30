@@ -12,10 +12,8 @@
  *   php run-php.php --update   # rewrite `expected` from the current
  *                              # binding output
  *
- * Set HTMLTRUST_RUST_CORE_LIB to use the Rust shared-core adapter. Without it,
- * this runner uses the independent PHP implementation.
- *
- * Requires PHP 8.5+ with DOM and intl extensions.
+ * HTMLTRUST_RUST_CORE_LIB must name the absolute Rust shared-library path.
+ * Requires PHP 8.5+ with FFI enabled.
  */
 
 declare(strict_types=1);
@@ -27,7 +25,6 @@ if (getenv('HTMLTRUST_PHP_PACKAGE_MODE') === 'installed') {
     }
     require_once $autoload;
 } else {
-    require_once __DIR__ . '/../../php/src/Canonicalize.php';
     require_once __DIR__ . '/../../php/src/RustCoreError.php';
     require_once __DIR__ . '/../../php/src/RustCore.php';
     $autoload = __DIR__ . '/../../php/vendor/autoload.php';
@@ -36,7 +33,6 @@ if (getenv('HTMLTRUST_PHP_PACKAGE_MODE') === 'installed') {
     }
 }
 
-use HTMLTrust\Canonicalization\Canonicalize;
 use HTMLTrust\Canonicalization\RustCore;
 
 $confDir     = realpath(__DIR__ . '/..');
@@ -53,14 +49,13 @@ foreach (array_slice($argv, 1) as $arg) {
     }
 }
 
-$rustCore = null;
 $rustCoreLibrary = getenv('HTMLTRUST_RUST_CORE_LIB');
-if ($rustCoreLibrary !== false && $rustCoreLibrary !== '') {
-    $rustCore = new RustCore($rustCoreLibrary);
-    echo "MODE: RustCore ({$rustCoreLibrary})\n";
-} else {
-    echo "MODE: independent PHP binding\n";
+if (!is_string($rustCoreLibrary) || $rustCoreLibrary === '') {
+    fwrite(STDERR, "HTMLTRUST_RUST_CORE_LIB is required\n");
+    exit(2);
 }
+$rustCore = new RustCore($rustCoreLibrary);
+echo "MODE: RustCore ({$rustCoreLibrary})\n";
 
 /**
  * Per-suite runner. Returns [string|null $output, bool $implemented].
@@ -76,7 +71,7 @@ $runners = [
         if (isset($fx['repeat'])) {
             $input = str_repeat($input, (int) $fx['repeat']);
         }
-        return [$rustCore === null ? Canonicalize::normalizeText($input) : $rustCore->normalizeText($input), true];
+        return [$rustCore->normalizeText($input), true];
     },
     'extract' => static function (array $fx) use ($rustCore) {
         if (!is_string($fx['input'])) {
@@ -87,9 +82,7 @@ $runners = [
             $input = str_repeat($input, (int) $fx['repeat']);
         }
         $baseUrl = array_key_exists('baseURL', $fx) ? $fx['baseURL'] : null;
-        return [$rustCore === null
-            ? Canonicalize::extractCanonicalText($input, false, $baseUrl)
-            : $rustCore->extractCanonicalText($input, false, $baseUrl), true];
+        return [$rustCore->extractCanonicalText($input, false, $baseUrl), true];
     },
     'claims' => static function (array $fx) use ($rustCore) {
         if (!is_array($fx['input'])) {
@@ -104,7 +97,7 @@ $runners = [
                 }
             }
         }
-        return [$rustCore === null ? Canonicalize::canonicalizeClaims($input) : $rustCore->canonicalizeClaims($input), true];
+        return [$rustCore->canonicalizeClaims($input), true];
     },
     'jcs' => static function (array $fx) use ($rustCore) {
         if (!is_string($fx['input'])) {
@@ -114,7 +107,7 @@ $runners = [
         if (isset($fx['repeat'])) {
             $input = str_repeat($input, (int) $fx['repeat']);
         }
-        return [$rustCore === null ? Canonicalize::canonicalizeJsonDocument($input) : $rustCore->canonicalizeJsonDocument($input), true];
+        return [$rustCore->canonicalizeJsonDocument($input), true];
     },
 ];
 

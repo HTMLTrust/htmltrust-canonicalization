@@ -17,4 +17,6 @@ RUN rustup target add wasm32-unknown-unknown \
  && cargo install --locked --version "${WASM_BINDGEN_VERSION}" \
       wasm-bindgen-cli --root /opt/wasm-bindgen
 
+RUN rustup component add rustfmt clippy
+
 WORKDIR /workspace

@@ -34,6 +34,9 @@ package canonicalize
 // static int32_t ht_claims(void *h, const uint8_t *in, size_t len, uint8_t **out, size_t *out_len) {
 //     return ((ht_bytes_fn)ht_symbol(h, "htmltrust_canonicalize_claims_v1"))(in, len, out, out_len);
 // }
+// static int32_t ht_extract_claims(void *h, const uint8_t *in, size_t len, uint8_t **out, size_t *out_len) {
+//     return ((ht_bytes_fn)ht_symbol(h, "htmltrust_extract_claims_from_signed_section_v1"))(in, len, out, out_len);
+// }
 // static int32_t ht_jcs(void *h, const uint8_t *in, size_t len, uint8_t **out, size_t *out_len) {
 //     return ((ht_bytes_fn)ht_symbol(h, "htmltrust_canonicalize_json_document_v1"))(in, len, out, out_len);
 // }
@@ -55,8 +58,8 @@ import (
 const RustCoreABIVersion uint32 = 1
 const rustCoreMaxOutputBytes = 1024 * 1024
 
-// RustCoreError is an error returned by the Rust ABI. Status 1 contains the
-// stable canonicalization code; status 2 denotes an invalid ABI argument.
+// RustCoreError is an error returned by the Rust ABI. Status 1 contains a
+// stable core error code; status 2 denotes an invalid ABI argument.
 type RustCoreError struct {
 	Code   string
 	Status int32
@@ -74,7 +77,7 @@ type RustCore struct {
 }
 
 // NewRustCore opens libraryPath and verifies the versioned ABI and all symbols
-// required by the four canonicalization operations.
+// required by canonicalization, claim extraction, and JSON operations.
 func NewRustCore(libraryPath string) (*RustCore, error) {
 	if libraryPath == "" {
 		return nil, errors.New("htmltrust Rust core library path must not be empty")
@@ -94,6 +97,7 @@ func NewRustCore(libraryPath string) (*RustCore, error) {
 		"htmltrust_normalize_text_v1",
 		"htmltrust_extract_canonical_text_options_v1",
 		"htmltrust_canonicalize_claims_v1",
+		"htmltrust_extract_claims_from_signed_section_v1",
 		"htmltrust_canonicalize_json_document_v1",
 		"htmltrust_bytes_free",
 	} {
@@ -224,6 +228,24 @@ func (r *RustCore) CanonicalizeClaims(claims map[string]string) (string, error) 
 	return string(result), err
 }
 
+// ExtractClaimsFromSignedSection delegates signed-section parsing and claim
+// normalization to the Rust core. The ABI returns a JSON object whose values
+// are strings, keeping HTML parsing out of this language binding.
+func (r *RustCore) ExtractClaimsFromSignedSection(source string) (map[string]string, error) {
+	raw, err := r.callExtractClaims([]byte(source))
+	if err != nil {
+		return nil, err
+	}
+	var claims map[string]string
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return nil, &RustCoreError{Code: "invalid-output", Status: 1}
+	}
+	if claims == nil {
+		claims = map[string]string{}
+	}
+	return claims, nil
+}
+
 func (r *RustCore) CanonicalizeJSONDocument(document []byte) ([]byte, error) {
 	return r.callBytes(document, true)
 }
@@ -243,5 +265,18 @@ func (r *RustCore) callBytes(input []byte, jcs bool) ([]byte, error) {
 	} else {
 		status = C.ht_claims(handle, bytesPointer(input, true), C.size_t(len(input)), &out, &outLen)
 	}
+	return r.finish(handle, status, out, outLen)
+}
+
+func (r *RustCore) callExtractClaims(input []byte) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	handle, err := r.begin()
+	if err != nil {
+		return nil, err
+	}
+	var out *C.uint8_t
+	var outLen C.size_t
+	status := C.ht_extract_claims(handle, bytesPointer(input, true), C.size_t(len(input)), &out, &outLen)
 	return r.finish(handle, status, out, outLen)
 }

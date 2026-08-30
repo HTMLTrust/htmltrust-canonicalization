@@ -2,17 +2,62 @@
 //!
 //! This crate makes the Rust implementation available to native and WebAssembly
 //! consumers. The stable v1 boundary covers normalization, HTML extraction,
-//! claims serialization, and strict JSON canonicalization.
+//! direct claim extraction, claims serialization, and strict JSON
+//! canonicalization.
 //!
 //! Native builds expose a C ABI for consumers such as Python `ctypes`, Go
 //! `cgo`, and PHP FFI. `wasm32` builds expose `wasm-bindgen` functions for
 //! JavaScript runtimes.
+
+use std::collections::BTreeMap;
+
+/// Encode a Rust string as one JSON string value without adding a serializer
+/// dependency to the ABI crate.
+fn json_escape(value: &str, output: &mut String) {
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0C}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            character if (character as u32) < 0x20 => {
+                use std::fmt::Write;
+                write!(output, "\\u{:04x}", character as u32).expect("String cannot fail");
+            }
+            character => output.push(character),
+        }
+    }
+}
+
+/// Return extracted claims as a UTF-8 JSON object. C has no portable map type,
+/// so both C and WebAssembly use this string representation at the boundary.
+fn extract_claims_json(html: &str) -> Result<String, String> {
+    let claims: BTreeMap<String, String> =
+        htmltrust_canonicalization::extract_claims_from_signed_section(html)?;
+    let mut output = String::from("{");
+    for (index, (name, value)) in claims.iter().enumerate() {
+        if index != 0 {
+            output.push(',');
+        }
+        output.push('"');
+        json_escape(name, &mut output);
+        output.push_str("\":\"");
+        json_escape(value, &mut output);
+        output.push('"');
+    }
+    output.push('}');
+    Ok(output)
+}
 
 // ---------------------------------------------------------------------------
 // Native C ABI
 // ---------------------------------------------------------------------------
 #[cfg(not(target_arch = "wasm32"))]
 mod capi {
+    use super::extract_claims_json;
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
     use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -409,6 +454,34 @@ mod capi {
         })
     }
 
+    /// Extract direct-child claim metadata from the first `signed-section`.
+    /// Without a wrapper, the input is treated as section inner HTML. The
+    /// successful result is a UTF-8 JSON object whose keys and values are the
+    /// normalized claims. Status and ownership match the other v1 APIs.
+    #[no_mangle]
+    pub unsafe extern "C" fn htmltrust_extract_claims_from_signed_section_v1(
+        html: *const u8,
+        html_len: usize,
+        out: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        if !initialize_byte_outputs(out, out_len) {
+            return 2;
+        }
+        if html.is_null() && html_len != 0 {
+            return 2;
+        }
+        catch_result(out, out_len, || {
+            let html = std::slice::from_raw_parts(
+                if html.is_null() { b"".as_ptr() } else { html },
+                html_len,
+            );
+            let html =
+                std::str::from_utf8(html).map_err(|_| "parser-profile-unsupported".to_string())?;
+            extract_claims_json(html)
+        })
+    }
+
     /// Free a string previously returned via `htmltrust_extract_canonical_text`.
     ///
     /// # Safety
@@ -596,6 +669,56 @@ mod capi {
         }
 
         #[test]
+        fn extracts_direct_claims_as_json() {
+            let input = r#"<signed-section><meta name="z" content="2"><meta name="a" content="“one”"><div><meta name="nested" content="ignored"></div></signed-section>"#.as_bytes();
+            let mut out = std::ptr::null_mut();
+            let mut out_len = 0;
+            let status = unsafe {
+                htmltrust_extract_claims_from_signed_section_v1(
+                    input.as_ptr(),
+                    input.len(),
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 0);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, br#"{"a":"\"one\"","z":"2"}"#);
+            unsafe { htmltrust_bytes_free(out, out_len) };
+        }
+
+        #[test]
+        fn claim_extraction_preserves_abi_error_and_output_rules() {
+            let mut out = std::ptr::NonNull::<u8>::dangling().as_ptr();
+            let mut out_len = 19;
+            let status = unsafe {
+                htmltrust_extract_claims_from_signed_section_v1(
+                    std::ptr::null(),
+                    1,
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 2);
+            assert!(out.is_null());
+            assert_eq!(out_len, 0);
+
+            let input = br#"<signed-section><meta name="a"></signed-section>"#;
+            let status = unsafe {
+                htmltrust_extract_claims_from_signed_section_v1(
+                    input.as_ptr(),
+                    input.len(),
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 1);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, b"claim-malformed");
+            unsafe { htmltrust_bytes_free(out, out_len) };
+        }
+
+        #[test]
         fn panic_in_versioned_operation_becomes_core_error() {
             let mut out = std::ptr::null_mut();
             let mut out_len = 0;
@@ -629,6 +752,7 @@ mod capi {
 // ---------------------------------------------------------------------------
 #[cfg(target_arch = "wasm32")]
 mod wasm {
+    use super::extract_claims_json;
     use wasm_bindgen::prelude::*;
 
     fn error(code: String) -> JsError {
@@ -652,6 +776,14 @@ mod wasm {
     #[wasm_bindgen(js_name = canonicalizeClaims)]
     pub fn canonicalize_claims(document: &str) -> Result<String, JsError> {
         htmltrust_canonicalization::canonicalize_claims_document(document.as_bytes()).map_err(error)
+    }
+
+    /// Extract direct-child claim metadata from the first `signed-section`.
+    /// Without a wrapper, the input is treated as section inner HTML. The
+    /// result is a JSON object with normalized claim names and values.
+    #[wasm_bindgen(js_name = extractClaimsFromSignedSection)]
+    pub fn extract_claims_from_signed_section(html: &str) -> Result<String, JsError> {
+        extract_claims_json(html).map_err(error)
     }
 
     /// Canonicalize one raw JSON document according to RFC 8785 (JCS).

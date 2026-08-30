@@ -1,8 +1,7 @@
-//! Conformance tests for the HTMLTrust Rust binding.
+//! Core behavior tests for HTMLTrust canonicalization.
 //!
-//! The 18 normalization cases below are a direct port of
-//! `htmltrust-canonicalization/javascript/test.js` and MUST produce
-//! byte-identical results across all language bindings.
+//! The shared JSON fixtures exercise these operations through Rust and every
+//! language adapter. These tests cover additional library-level invariants.
 
 use std::collections::BTreeMap;
 

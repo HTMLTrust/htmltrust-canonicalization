@@ -10,9 +10,11 @@ ARTIFACTS="${HTMLTRUST_SHARED_CORE_ARTIFACTS:-/artifacts}"
 NATIVE_TARGET="${HTMLTRUST_SHARED_CORE_NATIVE_TARGET:-${ARTIFACTS}/cargo-target-native}"
 WASM_TARGET="${HTMLTRUST_SHARED_CORE_WASM_TARGET:-${ARTIFACTS}/cargo-target-wasm}"
 WASM_OUT="${ARTIFACTS}/wasm-node"
+WASM_WEB_OUT="${ARTIFACTS}/wasm-web"
+NPM_PACKAGE_OUT="${ARTIFACTS}/npm-package"
 TEST_FIXTURES="${ARTIFACTS}/test-fixtures"
 
-mkdir -p "${ARTIFACTS}" "${NATIVE_TARGET}" "${WASM_TARGET}" "${WASM_OUT}" "${TEST_FIXTURES}"
+mkdir -p "${ARTIFACTS}" "${NATIVE_TARGET}" "${WASM_TARGET}" "${WASM_OUT}" "${WASM_WEB_OUT}" "${NPM_PACKAGE_OUT}" "${TEST_FIXTURES}"
 # wasm-bindgen emits a fixed, small set of files. Remove only those exact
 # paths, never an arbitrary artifact directory.
 rm -f -- \
@@ -21,6 +23,20 @@ rm -f -- \
   "${WASM_OUT}/htmltrust_canonicalization_ffi_bg.wasm" \
   "${WASM_OUT}/htmltrust_canonicalization_ffi.d.ts" \
   "${WASM_OUT}/htmltrust_canonicalization_ffi_bg.wasm.d.ts"
+rm -f -- \
+  "${WASM_WEB_OUT}/htmltrust_canonicalization_ffi.js" \
+  "${WASM_WEB_OUT}/htmltrust_canonicalization_ffi_bg.js" \
+  "${WASM_WEB_OUT}/htmltrust_canonicalization_ffi_bg.wasm" \
+  "${WASM_WEB_OUT}/htmltrust_canonicalization_ffi.d.ts" \
+  "${WASM_WEB_OUT}/htmltrust_canonicalization_ffi_bg.wasm.d.ts"
+
+echo ">> Rust formatting and Clippy"
+cargo fmt --manifest-path "${ROOT}/rust/Cargo.toml" -- --check
+cargo fmt --manifest-path "${ROOT}/ffi/Cargo.toml" -- --check
+CARGO_TARGET_DIR="${NATIVE_TARGET}" cargo clippy --locked --all-targets \
+  --manifest-path "${ROOT}/rust/Cargo.toml" -- -D warnings
+CARGO_TARGET_DIR="${NATIVE_TARGET}" cargo clippy --locked --all-targets \
+  --manifest-path "${ROOT}/ffi/Cargo.toml" -- -D warnings
 
 echo ">> Rust core and FFI tests"
 CARGO_TARGET_DIR="${NATIVE_TARGET}" cargo test --locked --manifest-path "${ROOT}/rust/Cargo.toml"
@@ -76,6 +92,28 @@ echo ">> wasm32-unknown-unknown"
 
 WASM_INPUT="${WASM_TARGET}/wasm32-unknown-unknown/release/htmltrust_canonicalization_ffi.wasm"
 wasm-bindgen --target nodejs --out-dir "${WASM_OUT}" "${WASM_INPUT}"
+wasm-bindgen --target web --out-dir "${WASM_WEB_OUT}" "${WASM_INPUT}"
+# The Node target is CommonJS. Keep it loadable inside this package's ESM
+# tree without rewriting the generated loader.
+cp "${ROOT}/javascript/wasm-node/package.json" "${WASM_OUT}/package.json"
+
+# Stage a complete npm package tree beside the native artifacts. The checkout
+# is read-only in this build container, so installed-package tests can run
+# `npm pack` against this tree without mutating source or relying on a build
+# lifecycle hook to invoke Rust.
+rm -rf -- "${NPM_PACKAGE_OUT}/javascript"
+mkdir -p "${NPM_PACKAGE_OUT}/javascript"
+cp "${ROOT}/package.json" "${NPM_PACKAGE_OUT}/"
+cp "${ROOT}/README.md" "${NPM_PACKAGE_OUT}/"
+cp "${ROOT}/LICENSE" "${NPM_PACKAGE_OUT}/"
+for file in \
+  index.js index.d.ts node.js browser.js portable-authoring.js portable-authoring-node.js \
+  portable-authoring.d.ts rust-wasm.js rust-wasm.d.ts verify-package.js; do
+  cp "${ROOT}/javascript/${file}" "${NPM_PACKAGE_OUT}/javascript/"
+done
+cp -a "${ROOT}/javascript/bin" "${NPM_PACKAGE_OUT}/javascript/"
+cp -a "${WASM_OUT}" "${NPM_PACKAGE_OUT}/javascript/wasm-node"
+cp -a "${WASM_WEB_OUT}" "${NPM_PACKAGE_OUT}/javascript/wasm-web"
 
 {
   echo "abi_version=1"
@@ -93,7 +131,12 @@ wasm-bindgen --target nodejs --out-dir "${WASM_OUT}" "${WASM_INPUT}"
       wasm-node/htmltrust_canonicalization_ffi.js \
       wasm-node/htmltrust_canonicalization_ffi.d.ts \
       wasm-node/htmltrust_canonicalization_ffi_bg.wasm \
-      wasm-node/htmltrust_canonicalization_ffi_bg.wasm.d.ts
+      wasm-node/htmltrust_canonicalization_ffi_bg.wasm.d.ts \
+      wasm-node/package.json \
+      wasm-web/htmltrust_canonicalization_ffi.js \
+      wasm-web/htmltrust_canonicalization_ffi.d.ts \
+      wasm-web/htmltrust_canonicalization_ffi_bg.wasm \
+      wasm-web/htmltrust_canonicalization_ffi_bg.wasm.d.ts
   )
 } > "${ARTIFACTS}/MANIFEST.txt"
 

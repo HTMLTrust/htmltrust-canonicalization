@@ -1,655 +1,128 @@
 /**
- * HTMLTrust Canonical Text Normalization
- * Spec: https://github.com/HTMLTrust/htmltrust-canonicalization
+ * HTMLTrust canonicalization and signing helpers.
  *
- * Uses parse5 for deterministic HTML parsing. Works in browsers and Node.js.
+ * Canonical bytes are produced by the Rust/WASM core. This module retains
+ * JavaScript-native signing, cryptography, key resolution, and authoring APIs.
  */
 
-import { NAMED_ENTITIES } from "./entities.js";
-import * as parse5 from "parse5";
+import {
+  canonicalizeClaims as rustCanonicalizeClaims,
+  canonicalizeJsonDocument as rustCanonicalizeJsonDocument,
+  extractCanonicalText as rustExtractCanonicalText,
+  extractClaimsFromSignedSection as rustExtractClaimsFromSignedSection,
+  normalizeText as rustNormalizeText,
+} from "./rust-wasm.js";
+
+export {
+  initializeBrowserWasm,
+  initializeNodeWasm,
+} from "./rust-wasm.js";
 
 const MAX_RESOURCE_BYTES = 1024 * 1024;
-const MAX_CLAIMS = 64;
-const MAX_CLAIM_FIELD_BYTES = 4096;
-const MAX_ELEMENT_DEPTH = 256;
-const MAX_JCS_DEPTH = 256;
 const MAX_REMOTE_KEY_BYTES = 64 * 1024;
+const MAX_JCS_DEPTH = 256;
 
 function utf8Length(value) {
   return new TextEncoder().encode(value).byteLength;
 }
 
-function checkResourceBytes(value, what) {
+function checkResourceBytes(value) {
   if (utf8Length(value) > MAX_RESOURCE_BYTES) {
     throw new Error("resource-limit-exceeded");
   }
   return value;
 }
 
-// Phase 6: Invisible/formatting characters to strip
-const STRIP_RE = new RegExp(
-  [
-    "\\u00AD", // soft hyphen
-    "\\u200B", // zero-width space
-    "\\u200E", // LRM
-    "\\u200F", // RLM
-    "\\u2060", // word joiner
-    "\\uFEFF", // BOM / ZWNBSP
-    "\\u034F", // combining grapheme joiner
-    "\\u061C", // arabic letter mark
-    "\\u180E", // mongolian vowel separator
-    "\\u0640", // arabic tatweel
-    "[\\uFE00-\\uFE0F]", // variation selectors 1-16
-    "[\\u202A-\\u202E]", // bidi embedding controls
-    "[\\u2066-\\u2069]", // bidi isolate controls
-    "[\\u2061-\\u2064]", // invisible math operators
-    "[\\uFFF9-\\uFFFC]", // interlinear annotation + obj replacement
-  ].join("|"),
-  "gu",
-);
+function assertUnicodeScalarString(value, errorCode = "jcs-invalid-surrogate") {
+  for (let index = 0; index < value.length; index++) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const low = value.charCodeAt(index + 1);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error(errorCode);
+      index++;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw new Error(errorCode);
+    }
+  }
+}
 
-// Supplementary plane stripping (variation selectors 17-256, tag characters)
-const STRIP_SUPPLEMENTARY_RE = /[\u{E0001}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
+function validateJsonValue(value, depth = 0, ancestors = new WeakSet()) {
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") {
+    assertUnicodeScalarString(value);
+    return;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("non-finite JSON number");
+    if (Object.is(value, -0)) throw new Error("jcs-number");
+    return;
+  }
+  if (typeof value === "bigint" || typeof value === "function" || typeof value === "symbol" || value === undefined) {
+    throw new Error(`unsupported JSON value: ${typeof value}`);
+  }
+  if (Array.isArray(value)) {
+    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
+    if (ancestors.has(value)) throw new Error("unsupported JSON value: cyclic object");
+    ancestors.add(value);
+    for (let index = 0; index < value.length; index++) {
+      if (!Object.hasOwn(value, index)) throw new Error("unsupported JSON value: sparse array");
+      validateJsonValue(value[index], depth + 1, ancestors);
+    }
+    ancestors.delete(value);
+    return;
+  }
+  if (typeof value === "object") {
+    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
+    if (ancestors.has(value)) throw new Error("unsupported JSON value: cyclic object");
+    ancestors.add(value);
+    for (const key of Object.keys(value)) {
+      assertUnicodeScalarString(key);
+      validateJsonValue(value[key], depth + 1, ancestors);
+    }
+    ancestors.delete(value);
+    return;
+  }
+  throw new Error(`unsupported JSON value: ${typeof value}`);
+}
 
-// Phase 2: All Unicode whitespace → U+0020
-const WHITESPACE_RE =
-  /[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/g;
+function jcsInputBytes(value) {
+  validateJsonValue(value);
+  const raw = JSON.stringify(value);
+  if (typeof raw !== "string") throw new Error("unsupported JSON value");
+  checkResourceBytes(raw);
+  return raw;
+}
 
-// Phase 3: Quotation mark normalization
-const SINGLE_QUOTE_RE = /[\u2018\u2019\u201A\u201B\u2039\u203A\u0060\u00B4\u2032]/g;
-const DOUBLE_QUOTE_RE =
-  /[\u201C\u201D\u201E\u201F\u00AB\u00BB\u2033\u301D\u301E\u301F]/g;
-const CJK_QUOTE_RE = /[\u300C\u300D\u300E\u300F\uFE41-\uFE44]/g;
-
-// Phase 4: Dashes → U+002D (includes minus sign from Phase 5)
-const DASH_RE = /[\u2010-\u2015\u2212\uFE58\uFE63]/g;
-
-// Phase 5: Ellipsis → three periods
-const ELLIPSIS_RE = /\u2026/g;
-
-/**
- * Normalize text content for canonical signing.
- * Apply AFTER extracting text from DOM, BEFORE hashing.
- *
- * Implements all 8 phases of the HTMLTrust canonicalization spec:
- *   1. NFKC normalization
- *   2. Whitespace normalization
- *   3. Quotation mark normalization
- *   4. Dash/hyphen normalization
- *   5. Other punctuation normalization
- *   6. Strip invisible/formatting characters
- *   7. Bidi control removal (handled by phase 6)
- *   8. Language-specific handling (NFKC + preserve ZWNJ/ZWJ)
- *
- * @param {string} text - Raw text content
- * @param {object} [options] - Options
- * @param {boolean} [options.preserveWhitespace=false] - Legacy 0.2 option;
- *   v1 callers must leave this false
- * @returns {string} Normalized text
- */
+/** Normalize text through the mandatory Rust/WASM core. */
 export function normalizeText(text, options = {}) {
-  if (typeof text !== "string") throw new TypeError("normalizeText expects a string");
-  checkResourceBytes(text, "source");
-  // JavaScript strings can contain lone UTF-16 surrogates, but they have no
-  // UTF-8 source representation. Reject them before any normalization rather
-  // than allowing TextEncoder to silently replace them with U+FFFD.
-  assertUnicodeScalarString(text, "parser-profile-unsupported");
-  const { preserveWhitespace = false } = options;
-
-  // Phase 1: Unicode NFKC normalization
-  // Handles ~80% of equivalences: ligatures, fullwidth/halfwidth,
-  // presentation forms, superscripts, CJK compatibility, Jamo composition
-  text = text.normalize("NFKC");
-
-  // Phase 6 + 7: Strip invisible/formatting/bidi characters
-  // (Done early so they don't interfere with other phases)
-  // Preserves ZWNJ (U+200C) and ZWJ (U+200D) — semantic in Persian, Indic, emoji
-  text = text.replace(STRIP_RE, "");
-  text = text.replace(STRIP_SUPPLEMENTARY_RE, "");
-
-  // Phase 2: Whitespace normalization
-  if (!preserveWhitespace) {
-    text = text.replace(WHITESPACE_RE, " ");
-    text = text.replace(/ {2,}/g, " ");
-  }
-
-  // Phase 3: Quotation mark normalization
-  text = text.replace(SINGLE_QUOTE_RE, "'");
-  text = text.replace(DOUBLE_QUOTE_RE, '"');
-  text = text.replace(CJK_QUOTE_RE, '"');
-
-  // Phase 4: Dash and hyphen normalization
-  text = text.replace(DASH_RE, "-");
-
-  // Phase 5: Other punctuation
-  text = text.replace(ELLIPSIS_RE, "...");
-
-  checkResourceBytes(text, "output");
-
-  return text;
+  return rustNormalizeText(text, options);
 }
 
-// === HTML → canonical text extraction ===
-// Boundary-producing elements from the protocol draft. A boundary-producing
-// element emits a line feed after its descendants have contributed text.
-// Inline elements (em, strong, a, span, etc.) do NOT get separators, so
-// "<p>hello <em>world</em></p>" canonicalizes to "hello world".
-const BLOCK_ELEMENTS =
-  "address|article|aside|blockquote|details|dialog|div|dl|fieldset|figcaption|figure|footer|form|h[1-6]|header|hgroup|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul";
-
-const SIGNED_ATTRS = ["href", "src", "alt", "aria-label"];
-const VOID_TAGS = new Set([
-  "area",
-  "base",
-  "br",
-  "col",
-  "embed",
-  "hr",
-  "img",
-  "input",
-  "link",
-  "meta",
-  "param",
-  "source",
-  "track",
-  "wbr",
-]);
-const EXCLUDED_TAGS = new Set(["script", "style", "template", "noscript", "iframe", "head", "meta", "link"]);
-
-// Full HTML5 named-entity table lives in ./entities.js (generated).
-// Lookups are case-sensitive per the HTML Living Standard.
-
-// windows-1252 mapping for numeric references in the C1 range (0x80-0x9F),
-// per the HTML5 "numeric character reference end" state.
-const C1_REPLACEMENTS = {
-  0x80: 0x20ac, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e, 0x85: 0x2026,
-  0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02c6, 0x89: 0x2030, 0x8a: 0x0160,
-  0x8b: 0x2039, 0x8c: 0x0152, 0x8e: 0x017d, 0x91: 0x2018, 0x92: 0x2019,
-  0x93: 0x201c, 0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
-  0x98: 0x02dc, 0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a, 0x9c: 0x0153,
-  0x9e: 0x017e, 0x9f: 0x0178,
-};
-
-function numericCharRef(n) {
-  if (n === 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) return "\uFFFD";
-  if (Object.prototype.hasOwnProperty.call(C1_REPLACEMENTS, n)) {
-    return String.fromCodePoint(C1_REPLACEMENTS[n]);
-  }
-  return String.fromCodePoint(n);
-}
-
-function decodeEntities(text) {
-  // Named references (case-sensitive, semicolon-terminated).
-  text = text.replace(/&[a-zA-Z][a-zA-Z0-9]*;/g, (match) =>
-    Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, match)
-      ? NAMED_ENTITIES[match]
-      : match,
-  );
-  // Numeric decimal references.
-  text = text.replace(/&#([0-9]+);/g, (_, code) => numericCharRef(parseInt(code, 10)));
-  // Numeric hex references.
-  text = text.replace(/&#[xX]([0-9a-fA-F]+);/g, (_, code) =>
-    numericCharRef(parseInt(code, 16)),
-  );
-  return text;
-}
-function parseAttributes(tag) {
-  const attrs = new Map();
-  const body = tag.replace(/^<\/?\s*[a-z][^\t\n\f\r \/>]*/i, "").replace(/\/?\s*>$/, "");
-  const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
-  let match;
-  while ((match = attrRe.exec(body))) {
-    const name = match[1].toLowerCase();
-    const value = match[2] ?? match[3] ?? match[4] ?? "";
-    attrs.set(name, decodeEntities(value));
-  }
-  return attrs;
-}
-
-function appendPart(parts, value) {
-  if (!value) return;
-  parts.push(value);
-}
-
-function appendAttributeRecords(parts, elementName, attrs, baseUrl) {
-  for (const attrName of SIGNED_ATTRS) {
-    if (!attrs.has(attrName)) continue;
-    let value = attrs.get(attrName);
-    if (attrName === "href" || attrName === "src") {
-      value = normalizeSafeURL(value, baseUrl, elementName, attrName);
-    } else {
-      value = normalizeText(value).trim();
-    }
-    value = value.replaceAll("@", "@@");
-    if (value.includes("\n")) {
-      throw new Error(`attribute-canonicalization-failed: ${elementName}.${attrName}`);
-    }
-    const prefix = parts.length && !/[\s\n]$/.test(parts[parts.length - 1]) ? "\n" : "";
-    parts.push(`${prefix}@attr:${elementName}:${attrName}:${value}\n`);
-  }
-}
-
-function normalizeSafeURL(value, baseUrl, elementName, attrName) {
-  // Inspect the parser-decoded value before WHATWG URL preprocessing. URL()
-  // otherwise silently strips tabs and line feeds.
-  if (/[\u0000-\u001F\u007F]/u.test(value)) {
-    throw new Error("url-policy-violation");
-  }
-  try {
-    const url = new URL(value, baseUrl || undefined);
-    if (url.protocol !== "https:" || url.username || url.password) {
-      throw new Error("url-policy-violation");
-    }
-    return url.href;
-  } catch (error) {
-    if (error?.message === "url-policy-violation") throw error;
-    throw new Error(`attribute-canonicalization-failed: ${elementName}.${attrName}`);
-  }
-}
-
-function finalizeCanonicalParts(parts) {
-  return parts
-    .join("")
-    .replace(/ {2,}/g, " ")
-    .replace(/[ \t]*\n[ \t]*/g, "\n")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
-}
-
-/**
- * Extract canonical text from an HTML fragment for signing or verification.
- *
- * This is the HTML → canonical text extraction defined in the HTMLTrust
- * specification §2.1. Given an HTML fragment (typically the inner contents
- * of a `<signed-section>` element), it:
- *
- *   1. Strips excluded elements (script, style, meta, link, head, noscript)
- *      and their contents. `<meta>` is excluded because inside a signed-section
- *      it carries claim metadata, not signed content.
- *   2. Emits signed semantic attribute records for href, src, alt, and
- *      aria-label.
- *   3. Converts boundary-producing elements and br to line feeds so that
- *      `<p>A</p><p>B</p>` canonicalizes to `A\nB`, not `AB`.
- *   4. Strips remaining inline markup while preserving text content.
- *   5. Decodes HTML entities.
- *   6. Applies the full text normalization pipeline (`normalizeText`).
- *
- * The fragment is parsed with parse5, then walked as a DOM. A portable-profile
- * validation pass rejects parser recovery and unsupported input before the
- * parsed tree is traversed, so the same input produces the same result across
- * bindings.
- *
- * @param {string} html - HTML fragment to canonicalize
- * @param {object} [options] - Options passed through to normalizeText
- * @param {string|null} [options.baseUrl] - Resolved document base URL from
- *   the source-snapshot layer; this binding does not discover `<base>`
- * @param {boolean} [options.preserveWhitespace=false] - Legacy 0.2 option;
- *   v1 callers must leave this false
- * @returns {string} Canonical text, ready to be hashed
- */
+/** Extract canonical HTML text through the mandatory Rust/WASM core. */
 export function extractCanonicalText(html, options = {}) {
-  if (typeof html !== "string") {
-    throw new TypeError("extractCanonicalText expects a string");
-  }
-  checkResourceBytes(html, "source");
-  const fragment = parseHTMLFragment(html);
-  const baseUrl = validateBaseURL(options.baseUrl);
-  const parts = [];
-  walkParsedNode(fragment, parts, baseUrl, options);
-  const result = finalizeCanonicalParts(parts);
-  checkResourceBytes(result, "output");
-  return result;
+  return rustExtractCanonicalText(html, options);
 }
 
-function parseHTMLFragment(html) {
-  assertUnicodeScalarString(html, "parser-profile-unsupported");
-  validatePortableSource(html);
-  const errors = [];
-  const fragment = parse5.parseFragment(html, {
-    sourceCodeLocationInfo: true,
-    onParseError(error) { errors.push(error); },
-  });
-  if (errors.length) throw new Error("parser-profile-unsupported");
-  return fragment;
-}
-
-function* iterPortableTokens(source, state) {
-  // Keep this source scan linear. The previous token regex nested a repeated
-  // alternation containing quoted `*` branches. An incomplete quoted
-  // attribute could make the regexp retry many partitions of the same span.
-  // This scanner advances its cursor monotonically and treats the first
-  // unquoted `>` as the end of a candidate tag.
-  let cursor = 0;
-  while (cursor < source.length) {
-    const start = source.indexOf("<", cursor);
-    if (start < 0) return;
-
-    // Raw-text bodies are data. Only their matching end tag can change the
-    // source-depth stack; skipping every other `<` also keeps malformed
-    // tag-like strings in script/style/iframe content linear.
-    if (state?.rawName) {
-      const isMatchingClose = source[start + 1] === "/" && portableTagName(source, start) === state.rawName;
-      if (!isMatchingClose) {
-        cursor = start + 1;
-        continue;
-      }
-    }
-
-    if (source.startsWith("<!--", start)) {
-      const commentEnd = source.indexOf("-->", start + 4);
-      if (commentEnd < 0) {
-        if (state?.rawName) {
-          cursor = start + 1;
-          continue;
-        }
-        return;
-      }
-      const tokenEnd = commentEnd + 3;
-      yield [start, tokenEnd];
-      cursor = tokenEnd;
-      continue;
-    }
-
-    if (source.startsWith("<!", start)) {
-      const declarationEnd = source.indexOf(">", start + 2);
-      if (declarationEnd < 0) {
-        if (state?.rawName) {
-          cursor = start + 1;
-          continue;
-        }
-        return;
-      }
-      const tokenEnd = declarationEnd + 1;
-      yield [start, tokenEnd];
-      cursor = tokenEnd;
-      continue;
-    }
-
-    if (!looksLikePortableTag(source, start)) {
-      cursor = start + 1;
-      continue;
-    }
-    const tokenEnd = scanPortableTagEnd(source, start);
-    if (tokenEnd == null) {
-      if (state?.rawName) {
-        cursor = start + 1;
-        continue;
-      }
-      return;
-    }
-    yield [start, tokenEnd];
-    cursor = tokenEnd;
-  }
-}
-
-function looksLikePortableTag(source, start) {
-  let index = start + 1;
-  if (source[index] === "/") index++;
-  const code = source.charCodeAt(index);
-  return code >= 0x41 && code <= 0x5a || code >= 0x61 && code <= 0x7a;
-}
-
-function scanPortableTagEnd(source, start) {
-  let quote = null;
-  for (let index = start + 1; index < source.length; index++) {
-    const char = source[index];
-    if (quote !== null) {
-      if (char === quote) quote = null;
-    } else if (char === '"' || char === "'") {
-      quote = char;
-    } else if (char === ">") {
-      return index + 1;
-    }
-  }
-  return null;
-}
-
-function portableTagName(source, start) {
-  let index = start + 1;
-  if (source[index] === "/") index++;
-  const first = source.charCodeAt(index);
-  if (!(first >= 0x41 && first <= 0x5a || first >= 0x61 && first <= 0x7a)) return null;
-  const nameStart = index;
-  index++;
-  while (index < source.length) {
-    const code = source.charCodeAt(index);
-    if (code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d || code === 0x20 || code === 0x2f || code === 0x3e) break;
-    index++;
-  }
-  return source.slice(nameStart, index).toLowerCase();
-}
-
-function validatePortableSource(source) {
-  // parse5 recovers misnesting and foster parenting without emitting a parse
-  // diagnostic, so these source-level checks complement its tokenizer.
-  const stack = [];
-  const scanState = { rawName: null };
-  let index = 0;
-  for (const [tokenStart, tokenEnd] of iterPortableTokens(source, scanState)) {
-    const text = source.slice(index, tokenStart);
-    // script, style, and iframe are raw-text/escapable-raw-text elements.
-    // Their bodies are excluded from canonical content, so references there
-    // must not affect the portable-profile validation of the surrounding
-    // document.
-    if (!isRawTextElement(stack.at(-1))) validatePortableReferences(text);
-    if (stack.at(-1) === "table" && text.trim()) throw new Error("parser-profile-unsupported");
-    index = tokenEnd;
-    const token = source.slice(tokenStart, tokenEnd);
-    if (token.startsWith("<!--")) {
-      // HTML comments cannot contain a double hyphen, including one hidden
-      // in the comment body before the closing delimiter.
-      const comment = token.slice(4, -3);
-      if (!isRawTextElement(stack.at(-1)) && (comment.includes("--") || comment.endsWith("-"))) {
-        throw new Error("parser-profile-unsupported");
-      }
-      continue;
-    }
-    const name = portableTagName(source, tokenStart);
-    if (!name) continue;
-    if (isRawTextElement(stack.at(-1)) && !(token.startsWith("</") && name === stack.at(-1))) continue;
-    validatePortableReferences(token);
-    if (name === "svg" || name === "math" || name === "foreignobject") throw new Error("parser-profile-unsupported");
-    if (/^<\//.test(token)) {
-      if (stack.at(-1) !== name) throw new Error("parser-profile-unsupported");
-      stack.pop();
-      scanState.rawName = isRawTextElement(stack.at(-1)) ? stack.at(-1) : null;
-      continue;
-    }
-    const attrs = parseAttributesWithDuplicateCheck(token);
-    if (!VOID_TAGS.has(name) && hasSelfClosingFlag(token)) {
-      throw new Error("parser-profile-unsupported");
-    }
-    if (!VOID_TAGS.has(name) && !hasSelfClosingFlag(token)) {
-      stack.push(name);
-      if (stack.length > MAX_ELEMENT_DEPTH) throw new Error("resource-limit-exceeded");
-      scanState.rawName = isRawTextElement(name) ? name : null;
-    }
-    void attrs;
-  }
-  const trailing = source.slice(index);
-  if (!isRawTextElement(stack.at(-1))) validatePortableReferences(trailing);
-  if (stack.at(-1) === "table" && trailing.trim()) throw new Error("parser-profile-unsupported");
-  if (stack.length) throw new Error("parser-profile-unsupported");
-}
-
-function isRawTextElement(name) {
-  return name === "script" || name === "style" || name === "iframe";
-}
-
-function validatePortableReferences(source) {
-  for (const match of source.matchAll(/&[A-Za-z][A-Za-z0-9]*;/g)) {
-    if (!Object.hasOwn(NAMED_ENTITIES, match[0])) throw new Error("parser-profile-unsupported");
-  }
-  if (/&[A-Za-z][A-Za-z0-9]*(?:$|[^A-Za-z0-9;])/u.test(source)) {
-    throw new Error("parser-profile-unsupported");
-  }
-}
-
-function parseAttributesWithDuplicateCheck(tag) {
-  const attrs = new Set();
-  const body = tag.replace(/^<\/?\s*[a-z][^\t\n\f\r \/>]*/i, "").replace(/\/?\s*>$/, "");
-  const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
-  for (const match of body.matchAll(attrRe)) {
-    const name = match[1].toLowerCase();
-    if (attrs.has(name)) throw new Error("parser-profile-unsupported");
-    attrs.add(name);
-  }
-  return attrs;
-}
-
-function hasSelfClosingFlag(tag) {
-  const end = tag.length - 1;
-  if (end < 0 || tag[end] !== ">") return false;
-  let slash = end - 1;
-  while (slash >= 0 && /\s/.test(tag[slash])) slash--;
-  if (slash < 0 || tag[slash] !== "/") return false;
-  const prefix = tag.slice(0, slash);
-  if (/\s$/.test(prefix)) return true;
-  return /^<\s*[a-z][^\t\n\f\r \/>]*$/i.test(prefix);
-}
-
-function validateBaseURL(raw) {
-  if (raw == null || raw === "") return undefined;
-  if (utf8Length(raw) > MAX_RESOURCE_BYTES) {
-    throw new Error("resource-limit-exceeded");
-  }
-  let url;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Error("attribute-canonicalization-failed");
-  }
-  if (url.protocol !== "https:" || url.username || url.password) {
-    throw new Error("url-policy-violation");
-  }
-  return url.href;
-}
-
-function parsedAttributes(node) {
-  const attrs = new Map();
-  for (const attr of node.attrs || []) attrs.set(attr.name.toLowerCase(), attr.value);
-  return attrs;
-}
-
-function walkParsedNode(node, parts, baseUrl, options) {
-  for (const child of node.childNodes || []) {
-    if (child.nodeName === "#text") {
-      appendPart(parts, normalizeText(child.value, options).replaceAll("@", "@@"));
-      continue;
-    }
-    if (child.nodeName === "#comment" || child.nodeName === "#documentType") continue;
-    const name = String(child.tagName || child.nodeName || "").toLowerCase();
-    if (!name || EXCLUDED_TAGS.has(name)) continue;
-    appendAttributeRecords(parts, name, parsedAttributes(child), baseUrl);
-    if (name === "br") {
-      appendPart(parts, "\n");
-    } else {
-      walkParsedNode(child, parts, baseUrl, options);
-      if (new RegExp(`^(${BLOCK_ELEMENTS}|signed-section)$`, "i").test(name)) appendPart(parts, "\n");
-    }
-  }
-}
-
-/**
- * Compute a canonical claims hash from a list of claim entries.
- *
- * Claims are serialized as a sorted list of "name:content" pairs, joined by
- * newlines, then hashed. Sorting ensures the order of <meta> elements in
- * the HTML source does not affect the hash. The caller is responsible for
- * computing the actual hash from the returned canonical string.
- *
- * @param {Record<string, string>} claims - claim name → value map
- * @returns {string} Canonical serialized string ready to be hashed
- */
-// Compare two strings by Unicode code point, which is the same ordering as
-// their UTF-8 byte sequences. JS string comparison uses UTF-16 code units,
-// which mis-orders supplementary-plane characters relative to high-BMP ones.
-function compareByCodePoint(a, b) {
-  const ai = Array.from(a);
-  const bi = Array.from(b);
-  const n = Math.min(ai.length, bi.length);
-  for (let i = 0; i < n; i++) {
-    const ca = ai[i].codePointAt(0);
-    const cb = bi[i].codePointAt(0);
-    if (ca !== cb) return ca - cb;
-  }
-  return ai.length - bi.length;
-}
-
+/** Serialize claims through the mandatory Rust/WASM core. */
 export function canonicalizeClaims(claims) {
-  if (!claims || typeof claims !== "object" || Array.isArray(claims)) throw new TypeError("canonicalizeClaims expects an object");
-  if (Object.keys(claims).length > MAX_CLAIMS) throw new Error("resource-limit-exceeded");
-  const seen = new Set();
-  const entries = Object.entries(claims)
-    .map(([name, value]) => {
-      if (typeof value !== "string") throw new Error("claim-malformed");
-      assertUnicodeScalarString(name, "claim-malformed");
-      assertUnicodeScalarString(value, "claim-malformed");
-      return [normalizeText(name).trim(), normalizeText(value).trim()];
-    })
-    .map(([name, value]) => {
-      if (!name) throw new Error("claim-malformed");
-      if (utf8Length(name) > MAX_CLAIM_FIELD_BYTES || utf8Length(value) > MAX_CLAIM_FIELD_BYTES) throw new Error("resource-limit-exceeded");
-      if (seen.has(name)) throw new Error(`claim-duplicate: ${name}`);
-      seen.add(name);
-      return [name, value];
-    })
-    // Sort by Unicode code point (== UTF-8 byte order), NOT by JS's default
-    // UTF-16 code-unit comparison, so astral/high-BMP names order identically
-    // to the other bindings (draft §4.6).
-    .sort(([a], [b]) => compareByCodePoint(a, b));
-  const escape = (value) => value.replaceAll("\\", "\\\\").replaceAll(":", "\\:").replaceAll("\n", "\\n");
-  const result = entries.map(([name, value]) => `${escape(name)}:${escape(value)}\n`).join("");
-  checkResourceBytes(result, "output");
-  return result;
+  return rustCanonicalizeClaims(claims);
 }
 
-/**
- * Extract direct child `<meta name content>` claims from a signed-section.
- * If `html` contains a `<signed-section>`, the first such element is used;
- * otherwise `html` is treated as the signed-section's inner HTML fragment.
- *
- * Duplicate normalized names, missing name/content, and empty normalized names
- * throw spec-style claim failures.
- */
+/** Extract signed-section claims through the mandatory Rust/WASM core. */
 export function extractClaimsFromSignedSection(html) {
-  if (typeof html !== "string") {
-    throw new TypeError("extractClaimsFromSignedSection expects a string");
-  }
-
-  checkResourceBytes(html, "source");
-  const fragment = parseHTMLFragment(html);
-  const section = findFirstSignedSection(fragment) ?? fragment;
-  const claims = {};
-  const seen = new Set();
-  for (const child of section.childNodes || []) {
-    if (child.tagName?.toLowerCase() === "meta") {
-      const attrs = parsedAttributes(child);
-      if (!attrs.has("name") || !attrs.has("content")) throw new Error("claim-malformed");
-      const claimName = normalizeText(attrs.get("name")).trim();
-      const content = normalizeText(attrs.get("content")).trim();
-      if (!claimName) throw new Error("claim-malformed");
-      if (seen.size >= MAX_CLAIMS) throw new Error("resource-limit-exceeded");
-      // Check field limits before duplicate detection. A duplicate oversized
-      // field is still a resource violation and must not be accepted as a
-      // duplicate-name failure.
-      if (utf8Length(claimName) > MAX_CLAIM_FIELD_BYTES || utf8Length(content) > MAX_CLAIM_FIELD_BYTES) throw new Error("resource-limit-exceeded");
-      if (seen.has(claimName)) throw new Error(`claim-duplicate: ${claimName}`);
-      seen.add(claimName);
-      claims[claimName] = content;
-    }
-  }
-  return claims;
+  return rustExtractClaimsFromSignedSection(html);
 }
 
-function findFirstSignedSection(node) {
-  for (const child of node.childNodes || []) {
-    if (child.tagName?.toLowerCase() === "signed-section") return child;
-    const nested = findFirstSignedSection(child);
-    if (nested) return nested;
-  }
-  return null;
+/** Canonicalize a JSON-compatible value through the mandatory Rust core. */
+export function canonicalizeJson(value) {
+  return canonicalizeJsonDocument(jcsInputBytes(value));
 }
+
+/** Canonicalize one raw JSON document through the mandatory Rust/WASM core. */
+export function canonicalizeJsonDocument(document) {
+  return rustCanonicalizeJsonDocument(document);
+}
+
 
 // === Signature binding (spec §2.1) ===
 
@@ -1305,233 +778,6 @@ export function buildEndorsementBinding(e) {
   }
   const { signature, ...unsigned } = e;
   return canonicalizeJson(unsigned);
-}
-
-function assertUnicodeScalarString(value, errorCode = "jcs-invalid-surrogate") {
-  for (let i = 0; i < value.length; i++) {
-    const unit = value.charCodeAt(i);
-    if (unit >= 0xd800 && unit <= 0xdbff) {
-      const low = value.charCodeAt(i + 1);
-      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error(errorCode);
-      i++;
-    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
-      throw new Error(errorCode);
-    }
-  }
-}
-
-function serializeJcs(value, depth = 0) {
-  if (value === null) return "null";
-  if (typeof value === "string") {
-    assertUnicodeScalarString(value);
-    return JSON.stringify(value);
-  }
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("non-finite JSON number");
-    if (Object.is(value, -0)) throw new Error("jcs-number");
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
-    if (value.length > MAX_RESOURCE_BYTES) throw new Error("resource-limit-exceeded");
-    for (let index = 0; index < value.length; index++) {
-      if (!Object.hasOwn(value, index)) throw new Error("unsupported JSON value: sparse array");
-    }
-    return `[${value.map((item) => serializeJcs(item, depth + 1)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
-    const keys = Object.keys(value).sort(); // RFC 8785 uses UTF-16 code units.
-    return `{${keys.map((key) => {
-      assertUnicodeScalarString(key);
-      if (value[key] === undefined) throw new Error("unsupported JSON value: undefined");
-      return `${JSON.stringify(key)}:${serializeJcs(value[key], depth + 1)}`;
-    }).join(",")}}`;
-  }
-  throw new Error(`unsupported JSON value: ${typeof value}`);
-}
-
-// Object APIs do not receive a raw JSON byte string, so account for the
-// complete JSON-shaped value before serialization. This catches oversized
-// aggregate inputs even when a later canonicalization step could shorten a
-// string (for example, URL normalization in a signing payload). The final
-// serialized result is checked separately for the output ceiling.
-function jcsInputBytes(value, depth = 0, ancestors = new WeakSet()) {
-  const add = (left, right) => {
-    const total = left + right;
-    if (total > MAX_RESOURCE_BYTES) throw new Error("resource-limit-exceeded");
-    return total;
-  };
-  if (value === null) return 4;
-  if (typeof value === "string") {
-    assertUnicodeScalarString(value);
-    return add(2, utf8Length(value));
-  }
-  if (typeof value === "boolean") return value ? 4 : 5;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("non-finite JSON number");
-    if (Object.is(value, -0)) throw new Error("jcs-number");
-    return JSON.stringify(value).length;
-  }
-  if (Array.isArray(value)) {
-    if (depth >= MAX_JCS_DEPTH || value.length > MAX_RESOURCE_BYTES) throw new Error("resource-limit-exceeded");
-    if (ancestors.has(value)) throw new Error("unsupported JSON value: cyclic object");
-    ancestors.add(value);
-    let total = 2;
-    for (let index = 0; index < value.length; index++) {
-      if (!Object.hasOwn(value, index)) throw new Error("unsupported JSON value: sparse array");
-      total = add(total, jcsInputBytes(value[index], depth + 1, ancestors));
-      if (index + 1 < value.length) total = add(total, 1);
-    }
-    ancestors.delete(value);
-    return total;
-  }
-  if (value && typeof value === "object") {
-    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
-    if (ancestors.has(value)) throw new Error("unsupported JSON value: cyclic object");
-    ancestors.add(value);
-    let total = 2;
-    const keys = Object.keys(value);
-    for (let index = 0; index < keys.length; index++) {
-      const key = keys[index];
-      assertUnicodeScalarString(key);
-      if (value[key] === undefined) throw new Error("unsupported JSON value: undefined");
-      total = add(total, add(2, utf8Length(key)));
-      total = add(total, 1);
-      total = add(total, jcsInputBytes(value[key], depth + 1, ancestors));
-      if (index + 1 < keys.length) total = add(total, 1);
-    }
-    ancestors.delete(value);
-    return total;
-  }
-  throw new Error(`unsupported JSON value: ${typeof value}`);
-}
-
-export function canonicalizeJson(value) {
-  jcsInputBytes(value);
-  const result = serializeJcs(value);
-  checkResourceBytes(result, "output");
-  return result;
-}
-
-// A small strict JSON parser is used for raw documents. JSON.parse is unable
-// to report duplicate member names and accepts lone surrogate escapes, both
-// of which are forbidden by RFC 8785/I-JSON.
-class StrictJsonParser {
-  constructor(source) { this.source = source; this.index = 0; }
-  fail() { throw new Error("invalid JSON document"); }
-  ws() { while (this.index < this.source.length && " \t\r\n".includes(this.source[this.index])) this.index++; }
-  value(depth = 0) {
-    this.ws();
-    const c = this.source[this.index];
-    if (c === '"') return this.string();
-    if (c === "{") return this.object(depth);
-    if (c === "[") return this.array(depth);
-    if (this.source.startsWith("true", this.index)) { this.index += 4; return true; }
-    if (this.source.startsWith("false", this.index)) { this.index += 5; return false; }
-    if (this.source.startsWith("null", this.index)) { this.index += 4; return null; }
-    const match = this.source.slice(this.index).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-    if (!match) this.fail();
-    const raw = match[0];
-    const number = Number(raw);
-    if (!Number.isFinite(number)) throw new Error("jcs-number");
-    // RFC 8785 erratum 7920: reject every JSON token that decodes to IEEE-754
-    // negative zero, including values whose magnitude underflows to zero.
-    if (raw[0] === "-" && Object.is(number, -0)) throw new Error("jcs-number");
-    this.index += raw.length;
-    return number;
-  }
-  string() {
-    if (this.source[this.index++] !== '"') this.fail();
-    let out = "";
-    while (this.index < this.source.length) {
-      const c = this.source[this.index++];
-      if (c === '"') { assertUnicodeScalarString(out); return out; }
-      if (c === "\\") {
-        if (this.index >= this.source.length) this.fail();
-        const e = this.source[this.index++];
-        const escapes = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
-        if (Object.hasOwn(escapes, e)) { out += escapes[e]; continue; }
-        if (e !== "u" || this.index + 4 > this.source.length) this.fail();
-        const hex = this.source.slice(this.index, this.index + 4);
-        if (!/^[0-9a-fA-F]{4}$/.test(hex)) this.fail();
-        const unit = parseInt(hex, 16); this.index += 4;
-        if (unit >= 0xd800 && unit <= 0xdbff) {
-          // Keep malformed JSON distinct from a valid JSON string containing
-          // an unpaired UTF-16 code unit. A truncated string or malformed
-          // low-surrogate escape must reach the generic JSON error path.
-          if (this.source.slice(this.index, this.index + 2) !== "\\u") {
-            if (!hasUnescapedQuote(this.source, this.index)) this.fail();
-            throw new Error("jcs-invalid-surrogate");
-          }
-          const lowHex = this.source.slice(this.index + 2, this.index + 6);
-          if (!/^[0-9a-fA-F]{4}$/.test(lowHex)) this.fail();
-          const low = parseInt(lowHex, 16);
-          if (low < 0xdc00 || low > 0xdfff) throw new Error("jcs-invalid-surrogate");
-          out += String.fromCodePoint(0x10000 + ((unit - 0xd800) << 10) + low - 0xdc00); this.index += 6;
-        } else if (unit >= 0xdc00 && unit <= 0xdfff) {
-          if (!hasUnescapedQuote(this.source, this.index)) this.fail();
-          throw new Error("jcs-invalid-surrogate");
-        }
-        else out += String.fromCharCode(unit);
-        continue;
-      }
-      if (c.charCodeAt(0) < 0x20) this.fail();
-      out += c;
-    }
-    this.fail();
-  }
-  array(depth) {
-    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
-    this.index++; const out = []; this.ws();
-    if (this.source[this.index] === "]") { this.index++; return out; }
-    while (true) {
-      out.push(this.value(depth + 1)); this.ws();
-      if (this.source[this.index] === "]") { this.index++; return out; }
-      if (this.source[this.index++] !== ",") this.fail();
-    }
-  }
-  object(depth) {
-    if (depth >= MAX_JCS_DEPTH) throw new Error("resource-limit-exceeded");
-    this.index++; const out = Object.create(null); const seen = new Set(); this.ws();
-    if (this.source[this.index] === "}") { this.index++; return out; }
-    while (true) {
-      this.ws(); if (this.source[this.index] !== '"') this.fail();
-      const key = this.string(); if (seen.has(key)) throw new Error("jcs-duplicate-key"); seen.add(key);
-      this.ws(); if (this.source[this.index++] !== ":") this.fail();
-      out[key] = this.value(depth + 1); this.ws();
-      if (this.source[this.index] === "}") { this.index++; return out; }
-      if (this.source[this.index++] !== ",") this.fail();
-    }
-  }
-  parse() { const result = this.value(); this.ws(); if (this.index !== this.source.length) this.fail(); return result; }
-}
-
-function hasUnescapedQuote(source, index) {
-  let escaped = false;
-  for (let i = index; i < source.length; i++) {
-    const c = source[i];
-    if (escaped) { escaped = false; continue; }
-    if (c === "\\") { escaped = true; continue; }
-    if (c === '"') return true;
-  }
-  return false;
-}
-
-export function canonicalizeJsonDocument(document) {
-  if (typeof document !== "string") throw new TypeError("canonicalizeJsonDocument expects a string");
-  checkResourceBytes(document, "source");
-  let result;
-  try {
-    assertUnicodeScalarString(document);
-    result = serializeJcs(new StrictJsonParser(document).parse());
-  } catch (error) {
-    if (error?.message === "resource-limit-exceeded" || error?.message === "jcs-invalid-surrogate" || error?.message === "jcs-duplicate-key" || error?.message === "jcs-number") throw error;
-    throw new Error("jcs-invalid-json");
-  }
-  checkResourceBytes(result, "output");
-  return result;
 }
 
 /**

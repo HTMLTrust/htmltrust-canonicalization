@@ -27,7 +27,15 @@ import * as nodeCrypto from 'node:crypto';
 import { generateKeyPairSync, sign as nodeSign, createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { encodeBase64Unpadded } from './index.js';
+import { initializeNodeWasm } from './rust-wasm.js';
+
+const require = createRequire(import.meta.url);
+const wasmModule = process.env.HTMLTRUST_WASM_PKG
+  ? require(process.env.HTMLTRUST_WASM_PKG)
+  : undefined;
+await initializeNodeWasm(wasmModule);
 
 const tests = [
   // [inputA, inputB, shouldMatch, description]

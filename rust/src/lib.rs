@@ -1,17 +1,17 @@
-//! HTMLTrust canonicalization (Rust binding).
+//! HTMLTrust canonicalization core.
 //!
-//! Public API:
+//! Checked protocol operations:
 //!
 //! - [`normalize_text`] -- the 8-phase HTMLTrust canonicalization pipeline.
 //! - [`extract_canonical_text`] -- HTML -> canonical text extraction
 //!   (spec §2.1), parses with `scraper` (html5ever) and walks the DOM.
+//! - [`extract_claims_from_signed_section`] -- direct claim metadata extraction.
 //! - [`canonicalize_claims`] -- canonical serialization of claim metadata
 //!   for the `claims-hash` field of the signature binding.
+//! - [`canonicalize_json_document`] -- strict RFC 8785 JSON canonicalization.
 //!
-//! All three functions produce byte-identical output to the JavaScript,
-//! Go, PHP, and Python bindings. The 18 conformance cases in
-//! `tests/conformance.rs` are a direct port of the shared test suite
-//! (`htmltrust-canonicalization/javascript/test.js`).
+//! JavaScript, Go, Python, and PHP call this implementation through the FFI
+//! crate's native or WebAssembly boundary.
 
 use std::collections::BTreeMap;
 

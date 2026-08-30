@@ -46,11 +46,20 @@ int main(void) {
         return 4;
     }
 
+    const uint8_t section[] =
+        "<signed-section><meta name=\"z\" content=\"2\">"
+        "<meta name=\"a\" content=\"1\"></signed-section>";
+    status = htmltrust_extract_claims_from_signed_section_v1(
+        section, sizeof(section) - 1, &output, &output_len);
+    if (expect_bytes(status, output, output_len, "{\"a\":\"1\",\"z\":\"2\"}")) {
+        return 5;
+    }
+
     const uint8_t json[] = "{\"z\":0,\"a\":1}";
     status = htmltrust_canonicalize_json_document_v1(
         json, sizeof(json) - 1, &output, &output_len);
     if (expect_bytes(status, output, output_len, "{\"a\":1,\"z\":0}")) {
-        return 5;
+        return 6;
     }
 
     return 0;

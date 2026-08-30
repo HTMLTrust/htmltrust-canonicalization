@@ -31,7 +31,7 @@ class RustCore:
     """Call the versioned length-based Rust C ABI from Python.
 
     ``library_path`` is mandatory.  The constructor checks the ABI before the
-    object is usable and validates every symbol needed by the four operations.
+    object is usable and validates every symbol needed by the five operations.
     """
 
     def __init__(self, library_path: str | os.PathLike[str]) -> None:
@@ -84,6 +84,17 @@ class RustCore:
         self._claims = self._required("htmltrust_canonicalize_claims_v1")
         self._claims.argtypes = [byte_ptr, ctypes.c_size_t, byte_ptr_ptr, size_ptr]
         self._claims.restype = ctypes.c_int32
+
+        self._extract_claims = self._required(
+            "htmltrust_extract_claims_from_signed_section_v1"
+        )
+        self._extract_claims.argtypes = [
+            byte_ptr,
+            ctypes.c_size_t,
+            byte_ptr_ptr,
+            size_ptr,
+        ]
+        self._extract_claims.restype = ctypes.c_int32
 
         self._jcs = self._required("htmltrust_canonicalize_json_document_v1")
         self._jcs.argtypes = [byte_ptr, ctypes.c_size_t, byte_ptr_ptr, size_ptr]
@@ -199,6 +210,21 @@ class RustCore:
         ptr, length, _owner = self._input(raw)
         result = self._call(self._claims, ptr, length)
         return result.decode("utf-8", "strict")
+
+    def extract_claims_from_signed_section(self, html: str) -> dict[str, str]:
+        raw = self._text(html, "extract_claims_from_signed_section")
+        ptr, length, _owner = self._input(raw)
+        result = self._call(self._extract_claims, ptr, length)
+        try:
+            claims = json.loads(result.decode("utf-8", "strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RustCoreError("invalid-output", 0) from exc
+        if not isinstance(claims, dict) or any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in claims.items()
+        ):
+            raise RustCoreError("invalid-output", 0)
+        return claims
 
     def canonicalize_json_document(self, document: str | bytes | bytearray) -> str:
         if isinstance(document, str):

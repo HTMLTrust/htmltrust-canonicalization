@@ -3,8 +3,6 @@ github.com/bits-and-blooms/bitset v1.20.0/go.mod h1:7hO7Gc7Pp1vODcmWvKMRA9BNmbv6
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
-github.com/gowebpki/jcs v1.0.1 h1:Qjzg8EOkrOTuWP7DqQ1FbYtcpEbeTzUoTN9bptp8FOU=
-github.com/gowebpki/jcs v1.0.1/go.mod h1:CID1cNZ+sHp1CCpAR8mPf6QRtagFBgPJE0FCUQ6+BrI=
 github.com/nlnwa/whatwg-url v0.6.2 h1:jU61lU2ig4LANydbEJmA2nPrtCGiKdtgT0rmMd2VZ/Q=
 github.com/nlnwa/whatwg-url v0.6.2/go.mod h1:x0FPXJzzOEieQtsBT/AKvbiBbQ46YlL6Xa7m02M1ECk=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

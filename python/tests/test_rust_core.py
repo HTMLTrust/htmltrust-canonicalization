@@ -41,8 +41,9 @@ def test_constructor_rejects_missing_operation_fixture():
         RustCore(MISSING_OPERATION_LIBRARY)
 
 
-@pytest.mark.skipif(not LIBRARY, reason="HTMLTRUST_RUST_CORE_LIB is not set")
 def test_rust_core_all_operations_and_edge_inputs():
+    if not LIBRARY:
+        pytest.fail("HTMLTRUST_RUST_CORE_LIB is required")
     core = RustCore(LIBRARY)
     assert core.normalize_text("A—B") == "A-B"
     assert core.normalize_text("a\x00b") == "a\x00b"
@@ -51,6 +52,9 @@ def test_rust_core_all_operations_and_edge_inputs():
     assert core.extract_canonical_text("<p>A</p>", base_url="") == "A"
     assert core.canonicalize_claims({"z": "2", "a": "1"}) == "a:1\nz:2\n"
     assert core.canonicalize_claims({}) == ""
+    assert core.extract_claims_from_signed_section(
+        '<signed-section><meta name="author" content="Ada"></signed-section>'
+    ) == {"author": "Ada"}
     assert core.canonicalize_json_document('{"z":0,"a":1}') == '{"a":1,"z":0}'
     with pytest.raises(RustCoreError, match="jcs-invalid-json") as invalid_json:
         core.canonicalize_json_document("{")

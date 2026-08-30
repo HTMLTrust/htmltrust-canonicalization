@@ -8,15 +8,12 @@
 
 import * as parse5 from "parse5";
 import {
-  normalizeText,
   extractCanonicalText,
   extractClaimsFromSignedSection,
   canonicalizeClaims,
 } from "./index.js";
 
 const MAX_RESOURCE_BYTES = 1024 * 1024;
-const MAX_CLAIMS = 64;
-const MAX_CLAIM_FIELD_BYTES = 4096;
 const SAFE_URL_PROTOCOL = "https:";
 
 const DIAGNOSTIC_HINTS = Object.freeze({
@@ -218,12 +215,12 @@ function regionResult(node, index, html, baseURL) {
     };
   }
   const innerHTML = html.slice(location.innerStartOffset, location.innerEndOffset);
+  const sectionHTML = html.slice(location.startOffset, location.endOffset);
   try {
     const canonicalText = extractCanonicalText(innerHTML, { baseUrl: baseURL });
-    // The full-document AST already identifies this exact section. Extracting
-    // from innerHTML would select a nested section's claims for the outer
-    // region, so use only this node's direct children.
-    const claims = extractDirectClaimsFromParsedSection(node);
+    // The exact source snapshot makes this section the first signed-section
+    // seen by the Rust core, while preserving direct-child claim semantics.
+    const claims = extractClaimsFromSignedSection(sectionHTML);
     const canonicalClaims = canonicalizeClaims(claims);
     return {
       index,
@@ -249,27 +246,6 @@ function regionResult(node, index, html, baseURL) {
       })],
     };
   }
-}
-
-function extractDirectClaimsFromParsedSection(section) {
-  const claims = {};
-  const seen = new Set();
-  for (const child of section.childNodes || []) {
-    if (child.tagName?.toLowerCase() !== "meta") continue;
-    const attrs = attrsFor(child);
-    if (!attrs.has("name") || !attrs.has("content")) throw new Error("claim-malformed");
-    const claimName = normalizeText(attrs.get("name")).trim();
-    const content = normalizeText(attrs.get("content")).trim();
-    if (!claimName) throw new Error("claim-malformed");
-    if (seen.size >= MAX_CLAIMS) throw new Error("resource-limit-exceeded");
-    if (utf8Length(claimName) > MAX_CLAIM_FIELD_BYTES || utf8Length(content) > MAX_CLAIM_FIELD_BYTES) {
-      throw new Error("resource-limit-exceeded");
-    }
-    if (seen.has(claimName)) throw new Error(`claim-duplicate: ${claimName}`);
-    seen.add(claimName);
-    claims[claimName] = content;
-  }
-  return claims;
 }
 
 /**

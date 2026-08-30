@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
-const adapterLocation = process.env.HTMLTRUST_NODE_ADAPTER_PATH
-  ? pathToFileURL(process.env.HTMLTRUST_NODE_ADAPTER_PATH).href
-  : new URL("../javascript/rust-wasm.js", import.meta.url).href;
+const packageEntry = process.env.HTMLTRUST_NODE_PACKAGE_ENTRY;
+const adapterLocation = packageEntry
+  ? pathToFileURL(packageEntry).href
+  : process.env.HTMLTRUST_NODE_ADAPTER_PATH
+    ? pathToFileURL(process.env.HTMLTRUST_NODE_ADAPTER_PATH).href
+    : new URL("../javascript/rust-wasm.js", import.meta.url).href;
 const {
   canonicalizeClaims,
   canonicalizeJsonDocument,
@@ -17,10 +20,12 @@ const {
   normalizeText,
 } = await import(adapterLocation);
 
-const wasmPath = process.env.HTMLTRUST_WASM_PKG;
-if (!wasmPath) throw new Error("HTMLTRUST_WASM_PKG is required");
-const require = createRequire(import.meta.url);
-initializeRustWasm(require(wasmPath));
+if (!packageEntry) {
+  const wasmPath = process.env.HTMLTRUST_WASM_PKG;
+  if (!wasmPath) throw new Error("HTMLTRUST_WASM_PKG is required");
+  const require = createRequire(import.meta.url);
+  initializeRustWasm(require(wasmPath));
+}
 
 const fixtureRoot = new URL("../conformance/fixtures/", import.meta.url);
 const fixtureDir = decodeURIComponent(fixtureRoot.pathname);

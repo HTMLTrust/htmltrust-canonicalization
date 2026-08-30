@@ -3,6 +3,7 @@ export interface RustWasmModule {
   abiVersion(): number;
   normalizeText(text: string): string;
   extractCanonicalText(html: string, base?: string | null): string;
+  extractClaimsFromSignedSection(html: string): string;
   extractCanonicalTextWithOptions?(
     html: string,
     preserveWhitespace: boolean,
@@ -19,6 +20,15 @@ export interface ExtractCanonicalTextOptions {
 
 /** Install one generated Rust/WASM module before calling the adapter methods. */
 export function initializeRustWasm(module: RustWasmModule): RustWasmModule;
+
+/** Initialize the packaged Node.js WASM module. */
+export function initializeNodeWasm(module?: unknown): Promise<RustWasmModule>;
+
+/** Initialize the packaged browser WASM module. */
+export function initializeBrowserWasm(
+  module?: unknown,
+  initializeInput?: unknown,
+): Promise<RustWasmModule>;
 
 /** Clear the installed module. Primarily useful for tests or reconfiguration. */
 export function resetRustWasm(): void;
@@ -39,5 +49,8 @@ export function extractCanonicalText(
 
 /** Canonicalize an object whose claim names and values are strings. */
 export function canonicalizeClaims(claims: Record<string, string>): string;
+
+/** Extract direct signed-section claims as a JavaScript object. */
+export function extractClaimsFromSignedSection(html: string): Record<string, string>;
 
 export function canonicalizeJsonDocument(document: string): string;

@@ -45,7 +45,7 @@ func TestNewRustCoreRejectsMissingOperationFixture(t *testing.T) {
 func TestRustCoreAllOperationsAndEdgeInputs(t *testing.T) {
 	path := os.Getenv("HTMLTRUST_RUST_CORE_LIB")
 	if path == "" {
-		t.Skip("HTMLTRUST_RUST_CORE_LIB is not set")
+		t.Fatal("HTMLTRUST_RUST_CORE_LIB is required for Rust-backed Go tests")
 	}
 	core, err := NewRustCore(path)
 	if err != nil {

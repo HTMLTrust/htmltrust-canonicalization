@@ -15,11 +15,12 @@ final class RustCore
         int32_t htmltrust_normalize_text_v1(const uint8_t *, size_t, bool, uint8_t **, size_t *);
         int32_t htmltrust_extract_canonical_text_options_v1(const uint8_t *, size_t, const uint8_t *, size_t, bool, uint8_t **, size_t *);
         int32_t htmltrust_canonicalize_claims_v1(const uint8_t *, size_t, uint8_t **, size_t *);
+        int32_t htmltrust_extract_claims_from_signed_section_v1(const uint8_t *, size_t, uint8_t **, size_t *);
         int32_t htmltrust_canonicalize_json_document_v1(const uint8_t *, size_t, uint8_t **, size_t *);
         void htmltrust_bytes_free(uint8_t *, size_t);
         CDEF;
 
-    /** @var mixed FFI instance, kept untyped because ext-ffi is optional. */
+    /** @var mixed FFI instance; PHP does not expose an application-safe type here. */
     private $ffi;
 
     public function __construct(string $libraryPath)
@@ -94,6 +95,29 @@ final class RustCore
         return $this->call(fn ($out, $outLength) => $this->ffi->htmltrust_canonicalize_claims_v1(
             $input, $length, \FFI::addr($out), \FFI::addr($outLength)
         ));
+    }
+
+    /** @return array<string|int, string> */
+    public function extractClaimsFromSignedSection(string $html): array
+    {
+        [$input, $length] = $this->input($html);
+        $json = $this->call(fn ($out, $outLength) => $this->ffi->htmltrust_extract_claims_from_signed_section_v1(
+            $input, $length, \FFI::addr($out), \FFI::addr($outLength)
+        ));
+        try {
+            $claims = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable $error) {
+            throw new RustCoreError('invalid-output', 0);
+        }
+        if (!is_array($claims)) {
+            throw new RustCoreError('invalid-output', 0);
+        }
+        foreach ($claims as $name => $value) {
+            if ((!is_string($name) && !is_int($name)) || !is_string($value)) {
+                throw new RustCoreError('invalid-output', 0);
+            }
+        }
+        return $claims;
     }
 
     public function canonicalizeJsonDocument(string $document): string

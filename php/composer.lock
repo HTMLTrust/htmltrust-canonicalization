@@ -4,45 +4,8 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "4bddf54a82628ded373a82fb4d152e17",
-    "packages": [
-        {
-            "name": "root23/php-json-canonicalization",
-            "version": "1.0.1",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/root23/php-json-canonicalization.git",
-                "reference": "be888e03a171c2b9667265d03924bd6bfc3fe85a"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/root23/php-json-canonicalization/zipball/be888e03a171c2b9667265d03924bd6bfc3fe85a",
-                "reference": "be888e03a171c2b9667265d03924bd6bfc3fe85a",
-                "shasum": ""
-            },
-            "require": {
-                "php": ">=8.0"
-            },
-            "require-dev": {
-                "friendsofphp/php-cs-fixer": "^v3.27.0",
-                "phpstan/phpstan": "^1.10",
-                "phpunit/phpunit": "^9"
-            },
-            "type": "library",
-            "autoload": {
-                "psr-4": {
-                    "Root23\\JsonCanonicalizer\\": "src"
-                }
-            },
-            "notification-url": "https://packagist.org/downloads/",
-            "description": "Serialize data into canonical way, based on RFC-8785.",
-            "support": {
-                "issues": "https://github.com/root23/php-json-canonicalization/issues",
-                "source": "https://github.com/root23/php-json-canonicalization/tree/1.0.1"
-            },
-            "time": "2023-09-27T08:27:25+00:00"
-        }
-    ],
+    "content-hash": "81ac2ce8121ee59652df88cda7148d69",
+    "packages": [],
     "packages-dev": [
         {
             "name": "myclabs/deep-copy",
@@ -1704,9 +1667,8 @@
     "prefer-lowest": false,
     "platform": {
         "php": ">=8.5",
-        "ext-dom": "*",
-        "ext-intl": "*",
-        "ext-mbstring": "*",
+        "ext-ffi": "*",
+        "ext-uri": "*",
         "ext-json": "*",
         "ext-openssl": "*",
         "ext-sodium": "*"
