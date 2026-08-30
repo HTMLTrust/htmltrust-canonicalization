@@ -2,6 +2,7 @@ package canonicalize
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -39,6 +40,36 @@ func TestNewRustCoreRejectsMissingOperationFixture(t *testing.T) {
 	}
 	if _, err := NewRustCore(path); err == nil || !strings.Contains(err.Error(), "htmltrust Rust core symbol is missing: htmltrust_canonicalize_json_document_v1") {
 		t.Fatalf("missing operation fixture error: %v", err)
+	}
+}
+
+func TestRustCoreLoadsUnicodeWindowsPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows loader path test")
+	}
+	source := os.Getenv("HTMLTRUST_RUST_CORE_LIB")
+	if source == "" {
+		t.Fatal("HTMLTRUST_RUST_CORE_LIB is required for Rust-backed Go tests")
+	}
+	contents, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(t.TempDir(), "cøré-核心")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(directory, "htmltrust_canonicalization_ffi.dll")
+	if err := os.WriteFile(copyPath, contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	core, err := NewRustCore(copyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.Close()
+	if got, err := core.NormalizeText("A  B", false); err != nil || got != "A B" {
+		t.Fatalf("normalize through Unicode DLL path: %q, %v", got, err)
 	}
 }
 
