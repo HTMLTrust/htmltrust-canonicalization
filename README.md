@@ -12,6 +12,11 @@ Status: `0.3.0` release candidate for `htmltrust-c14n-v1`
 Previous protocol release: `v0.2.2` (`79b0d52fecd958f8fc7ade713fe0799ca1e79626`)
 Readers: binding users and contributors
 
+## Standalone prerequisites
+
+The Docker test path needs Git and Docker Engine with Compose. Running a
+binding directly also needs the toolchain listed for that binding below.
+
 ## Test a fresh checkout
 
 Docker is the shortest path to a complete result. This command installs each
@@ -54,11 +59,63 @@ node --input-type=module -e \
   'import { normalizeText } from "./javascript/index.js"; console.log(normalizeText("A—B"))'
 ```
 
-During the `0.3.0` review, another project can install the current main branch:
+For a reproducible install in another project, use a published release tag or
+a full SHA that the project has reviewed. Do not install a moving branch. To
+resolve a reviewed tag before its SHA is known, inspect it and pin the result:
 
 ```sh
-npm install github:HTMLTrust/htmltrust-canonicalization#main
+CANON_URL=https://github.com/HTMLTrust/htmltrust-canonicalization.git
+CANON_REF=REPLACE_WITH_REVIEWED_TAG
+CANON_SHA="$(git ls-remote "$CANON_URL" "refs/tags/$CANON_REF" | awk 'NR==1 {print $1}')"
+test "$CANON_SHA" && test "${#CANON_SHA}" -eq 40
+npm install "github:HTMLTrust/htmltrust-canonicalization#$CANON_SHA"
 ```
+
+Review the resolved commit before release. A full reviewed SHA can be assigned
+directly to `CANON_SHA`.
+
+#### Preflight a complete HTML document
+
+The portable-authoring module finds every `<signed-section>` in a complete
+document, resolves the final response URL and first `<base href>`, then
+runs the v1 fragment checks for each region. It returns JSON with a pass/fail
+status, source offsets, canonical content, claims, and stable diagnostic codes.
+
+From a checkout:
+
+```sh
+npm ci
+node javascript/bin/portable-authoring.js \
+  --url https://example.org/articles/example.html \
+  article.html
+```
+
+The command exits `0` when at least one signed region is present and every
+region passes. It exits `1` when a region fails or no region is found. Base
+URL problems include a warning. A malformed, `data:`, or `javascript:` first
+base falls back to the final response URL. Other first-base values remain the
+document base, so a relative signed URL resolved to HTTP fails the HTMLTrust
+URL profile. Later base elements are ignored. The JSON `hint`,
+`context`, and `location` fields identify the source change needed by an
+authoring tool.
+
+The same helper is available to JavaScript consumers:
+
+```js
+import {
+  preflightPortableDocument,
+  wrapSignedSection,
+} from "@htmltrust/canonicalization/portable-authoring";
+
+const result = preflightPortableDocument(html, {
+  documentURL: "https://example.org/articles/example.html",
+});
+const signedFragment = wrapSignedSection("<p>Ready to sign.</p>");
+```
+
+`wrapSignedSection` accepts a well-formed fragment and verifies that wrapping
+preserves canonical content and claims. It rejects document containers and an
+existing signed section, because those inputs need an author decision.
 
 ### Go
 
@@ -179,6 +236,8 @@ behavior.
 Related repositories:
 
 - [HTMLTrust specification](https://github.com/HTMLTrust/htmltrust-spec)
+- [Hugo integration](../htmltrust-hugo/)
+- [Study 1 reproduction harness](../htmltrust-study1/)
 - [Reference server](https://github.com/HTMLTrust/htmltrust-server-reference)
 - [Reference browser extension](https://github.com/HTMLTrust/htmltrust-browser-reference)
 - [Reference CMS plugins](https://github.com/HTMLTrust/htmltrust-cms-reference)
