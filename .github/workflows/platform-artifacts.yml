@@ -16,7 +16,6 @@ env:
   ABI_VERSION: "1"
   ANDROID_NDK_VERSION: "27.3.13750724"
   ANDROID_API_LEVEL: "21"
-  IPHONEOS_DEPLOYMENT_TARGET: "12.0"
 
 jobs:
   native-unix:
@@ -246,6 +245,8 @@ jobs:
     name: Apple mobile XCFramework
     runs-on: macos-15
     timeout-minutes: 50
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

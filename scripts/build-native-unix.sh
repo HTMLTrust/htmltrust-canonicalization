@@ -33,6 +33,26 @@ case "$TARGET" in
     ;;
 esac
 
+# Apple deployment variables influence Clang's platform selection. Resolve the
+# desktop SDK explicitly in case the caller previously ran a mobile build.
+MACOS_SDKROOT=""
+if [[ "$PLATFORM" == "darwin" ]]; then
+  unset IPHONEOS_DEPLOYMENT_TARGET
+  command -v xcrun >/dev/null 2>&1 || {
+    echo "macOS builds require xcrun" >&2
+    exit 2
+  }
+  if ! MACOS_SDKROOT="$(SDKROOT='' xcrun --sdk macosx --show-sdk-path)"; then
+    echo "unable to locate the macOS SDK" >&2
+    exit 2
+  fi
+  [[ -d "$MACOS_SDKROOT" ]] || {
+    echo "invalid macOS SDK path: $MACOS_SDKROOT" >&2
+    exit 2
+  }
+  export SDKROOT="$MACOS_SDKROOT"
+fi
+
 mkdir -p "$OUTPUT_ROOT" "$CARGO_TARGET_DIR"
 BUILD_DIR="$CARGO_TARGET_DIR/$TARGET/release"
 
@@ -68,6 +88,8 @@ if [[ "$RUN_NATIVE_SMOKE" == true ]]; then
   CFLAGS=(-O2)
   if [[ "$TARGET" == "i686-unknown-linux-gnu" ]]; then
     CFLAGS+=(-m32)
+  elif [[ "$PLATFORM" == "darwin" ]]; then
+    CFLAGS+=(-isysroot "$MACOS_SDKROOT")
   fi
   echo ">> Dynamic C header smoke test ($TARGET)"
   if [[ "$PLATFORM" == "linux" ]]; then
