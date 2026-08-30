@@ -3,10 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   shared-core:
@@ -37,3 +43,7 @@ jobs:
             ${{ runner.temp }}/htmltrust-shared-core-artifacts/npm-dist/
             ${{ runner.temp }}/htmltrust-shared-core-artifacts/wasm-node/
             ${{ runner.temp }}/htmltrust-shared-core-artifacts/wasm-web/
+
+  platform-artifacts:
+    name: Platform artifact matrix
+    uses: ./.github/workflows/platform-artifacts.yml

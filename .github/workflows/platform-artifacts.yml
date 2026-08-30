@@ -1,32 +1,7 @@
 name: Platform artifacts
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-    paths:
-      - ".github/workflows/platform-artifacts.yml"
-      - "rust/**"
-      - "ffi/**"
-      - "go/**"
-      - "mobile/**"
-      - "scripts/artifact_bundle.py"
-      - "scripts/build-android-artifacts.sh"
-      - "scripts/build-apple-mobile-artifacts.sh"
-      - "scripts/build-native-unix.sh"
-      - "scripts/build-native-windows.ps1"
-  pull_request:
-    paths:
-      - ".github/workflows/platform-artifacts.yml"
-      - "rust/**"
-      - "ffi/**"
-      - "go/**"
-      - "mobile/**"
-      - "scripts/artifact_bundle.py"
-      - "scripts/build-android-artifacts.sh"
-      - "scripts/build-apple-mobile-artifacts.sh"
-      - "scripts/build-native-unix.sh"
-      - "scripts/build-native-windows.ps1"
+  workflow_call:
   workflow_dispatch:
 
 permissions:
