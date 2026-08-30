@@ -6,7 +6,7 @@ ownership, and adapter checks.
 
 **Author:** HTMLTrust contributors
 
-**Date:** 2026-08-29
+**Date:** 2026-08-30
 
 **Version:** 0.3.0 release candidate
 
@@ -18,8 +18,7 @@ ownership, and adapter checks.
 
 ## Shortest supported path
 
-The supported native validation lane is Linux amd64. Docker is required for the
-repository's complete check:
+The repository's complete check uses Docker:
 
 ```sh
 make core-artifacts
@@ -35,6 +34,15 @@ path when integrating outside Docker.
 The build gives each session a private Cargo target directory. Set
 `HTMLTRUST_TEST_SESSION_ID` for concurrent sessions and
 `HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT` to select the artifact directory.
+
+The [platform artifact guide](PLATFORM-ARTIFACTS.md) covers local desktop,
+Android, and iOS builders. The primary desktop runtime matrix covers Linux,
+macOS, and Windows on x86_64 and ARM64. Linux and Windows i686 are C ABI
+compatibility lanes. Android and iOS are link-checked package lanes.
+
+The current PR checks cover the Linux amd64 shared-core artifact and the
+platform artifact matrix. The platform jobs upload unsigned desktop and mobile
+archives with target-specific manifests and checksums.
 
 ## Decision and boundary
 
@@ -92,7 +100,8 @@ library path.
 
 ## Adapter startup
 
-Go uses cgo and an absolute path:
+Go uses an absolute path. Supported Unix systems load it through cgo; Windows
+AMD64 and ARM64 use Go's native Win32 loader:
 
 ```go
 core, err := canonicalize.NewRustCore("/absolute/libhtmltrust_canonicalization_ffi.so")
@@ -166,22 +175,29 @@ callers use `false`; WebAssembly v1 does not accept the compatibility behavior.
 
 ## Artifacts and review
 
+The native and mobile builders are documented in
+[Platform artifacts](PLATFORM-ARTIFACTS.md). They use the same Rust core and
+the same public header. CI artifacts are unsigned and unpublished. Signing,
+notarization, release policy, mobile runtime tests, SwiftPM publication, and
+Maven publication remain future release-matrix work.
+
 The artifact directory contains:
 
 | Path | Use |
 | --- | --- |
-| `libhtmltrust_canonicalization_ffi.so` | Linux amd64 dynamic C ABI |
+| `libhtmltrust_canonicalization_ffi.so` | Linux dynamic C ABI in the current shared-core artifact layout |
 | `libhtmltrust_canonicalization_ffi.a` | Static C ABI linking |
 | `htmltrust_canonicalization.h` | Public declarations |
 | `wasm-node/` | Node.js `wasm-bindgen` module and `.wasm` file |
 | `wasm-web/` | Browser `wasm-bindgen` module and `.wasm` file |
 | `npm-package/` | Staged npm package tree with both WASM layouts |
 | `npm-dist/` | Tested npm tarball and checksum after `make test-docker` |
-| `MANIFEST.txt` | ABI, toolchain, target, and checksums |
+| `MANIFEST.txt` | ABI, toolchain, target, and checksums in the shared-core artifact layout |
 
 Keep the native library and WebAssembly files from one build. Review the
-manifest before publishing a package. The maintained native lane is Linux
-amd64; other platforms need their own build and verification record.
+manifest before publishing a package. Desktop archive manifests also record
+source, toolchain, file size, and SHA-256 metadata. Mobile manifests describe
+their ABI or slice outputs. The platform guide lists the exact archive files.
 
 ## Glossary
 

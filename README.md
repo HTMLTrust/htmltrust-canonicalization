@@ -7,11 +7,11 @@ packaged WebAssembly build.
 
 **Author:** HTMLTrust contributors
 
-**Date:** 2026-08-29
+**Date:** 2026-08-30
 
 **Version:** 0.3.0 release candidate
 
-**Status:** Release candidate, Linux amd64 native lane
+**Status:** Release candidate, desktop and mobile artifact lanes
 
 **Readers:** Application integrators and binding contributors
 
@@ -50,7 +50,7 @@ session receives private Cargo target directories.
 | Package | Prerequisites | Test command after dependency install |
 | --- | --- | --- |
 | JavaScript | Node.js 22 or newer, `npm ci` | `HTMLTRUST_WASM_PKG=/absolute/wasm-node/htmltrust_canonicalization_ffi.js npm test` |
-| Go | Go 1.25 or newer, cgo, Linux amd64 | `(cd go && HTMLTRUST_RUST_CORE_LIB=/absolute/lib.so go test ./...)` |
+| Go | Go 1.25 or newer; cgo and a C compiler on Unix | `(cd go && HTMLTRUST_RUST_CORE_LIB=/absolute/lib.so go test ./...)` |
 | Python | Python 3.10 or newer, `python3 -m pip install -e 'python[dev]'` | `HTMLTRUST_RUST_CORE_LIB=/absolute/lib.so python3 -m pytest -q python/tests` |
 | PHP | PHP 8.5 or newer, Composer install in `php/`, `ext-ffi`, `ext-uri`, Linux amd64 | `(cd php && HTMLTRUST_RUST_CORE_LIB=/absolute/lib.so composer test)` |
 | Rust | Rust 1.86 or newer | `cargo test --locked --manifest-path rust/Cargo.toml` |
@@ -110,10 +110,26 @@ layer computes the document base URL, including HTML `<base>` processing.
 
 ## Platform and release support
 
-The maintained native validation lane is Linux amd64. Go uses cgo. PHP uses
-FFI and requires `ffi.enable` for the SAPI that loads the library. The
-JavaScript package contains both `wasm-node/` and `wasm-web/` generated
-artifact layouts.
+The primary desktop runtime lanes cover Linux, macOS, and Windows on x86_64
+and ARM64. Linux i686 and Windows i686 are C ABI compatibility lanes. Android
+API 21 uses NDK r27d and produces four ABI libraries plus a Prefab AAR. iOS 12
+produces an arm64 device and arm64 plus x86_64 simulator static XCFramework.
+Each mobile ABI or slice receives a C link check.
+
+CI artifacts are unsigned and unpublished. Signing, notarization, mobile
+runtime tests, SwiftPM and Maven publication, and release policy remain future
+work. See the [platform artifact guide](docs/PLATFORM-ARTIFACTS.md) for exact
+scripts, environment variables, archive contents, and support limits.
+
+The current PR checks run the Linux amd64 shared-core lane and the platform
+artifact matrix. The platform jobs upload unsigned target archives for the
+desktop, Android, and Apple mobile lanes. The [platform artifact guide](docs/PLATFORM-ARTIFACTS.md)
+lists their CI names and local commands.
+
+Go uses cgo on supported Unix systems. Its Windows AMD64 and ARM64 loader uses
+the native Win32 API and works with `CGO_ENABLED=0`. PHP uses FFI and requires
+`ffi.enable` for the SAPI that loads the library. The JavaScript package
+contains both `wasm-node/` and `wasm-web/` generated artifact layouts.
 
 The removed JavaScript, Go, Python, and PHP implementations remain in Git
 history. For example, use `git log --all -- go/extract.go` or `git show

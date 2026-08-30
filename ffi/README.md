@@ -6,7 +6,7 @@ library. JavaScript uses the packaged Node.js or browser WebAssembly layout.
 
 **Author:** HTMLTrust contributors
 
-**Date:** 2026-08-29
+**Date:** 2026-08-30
 
 **Version:** 0.3.0 release candidate
 
@@ -18,9 +18,9 @@ library. JavaScript uses the packaged Node.js or browser WebAssembly layout.
 
 ## Prerequisites and shortest test
 
-The maintained native lane is Linux amd64. Install Rust 1.86 or newer, a C
-compiler, and `wasm-bindgen-cli` for WebAssembly output. From the repository
-root, the complete supported path uses Docker:
+Install Rust 1.86 or newer, a C compiler, and `wasm-bindgen-cli` for
+WebAssembly output. From the repository root, the complete supported path uses
+Docker:
 
 ```sh
 make core-artifacts
@@ -30,6 +30,38 @@ make test-docker
 `make core-artifacts` prints the disk-backed artifact directory. The output
 contains the native library, static library, public header, `wasm-node/`,
 `wasm-web/`, and `MANIFEST.txt`.
+
+## Platform artifact lanes
+
+The primary desktop runtime targets are Linux, macOS, and Windows on x86_64
+and ARM64. Linux i686 and Windows i686 provide C ABI compatibility checks.
+Android API 21 with NDK r27d produces raw `jniLibs` and a Prefab AAR for
+`arm64-v8a`, `armeabi-v7a`, `x86_64`, and `x86`. iOS 12 produces a static
+XCFramework with arm64 device and arm64 plus x86_64 simulator slices. Every
+mobile ABI or slice gets a C link check.
+
+Run the desktop builders from the repository root:
+
+```sh
+bash scripts/build-native-unix.sh <target> <absolute-output> <version> [abi-version]
+```
+
+```powershell
+.\scripts\build-native-windows.ps1 -Target <target> -OutputRoot <absolute-output> -Version <version>
+```
+
+Both scripts require a private absolute `CARGO_TARGET_DIR` and use
+`cargo build --locked --release`. Android uses
+`scripts/build-android-artifacts.sh` with `ANDROID_NDK`, optional
+`ANDROID_API_LEVEL`, `HTMLTRUST_CARGO_TARGET_ROOT`,
+`HTMLTRUST_ANDROID_ARTIFACTS`, and `HTMLTRUST_TEST_SESSION_ID`. iOS uses
+`scripts/build-apple-mobile-artifacts.sh` with `IPHONEOS_DEPLOYMENT_TARGET`,
+`HTMLTRUST_CARGO_TARGET_ROOT`, `HTMLTRUST_IOS_ARTIFACTS`, and
+`HTMLTRUST_TEST_SESSION_ID`.
+
+The scripts stage target libraries, headers, checksums, and manifests. CI
+artifacts are unsigned and unpublished. See the [platform artifact guide](../docs/PLATFORM-ARTIFACTS.md)
+for target maps, exact output names, and mobile support limits.
 
 For native crate development:
 

@@ -2,15 +2,15 @@
 
 This module provides the Go adapter for the Rust implementation of
 `htmltrust-c14n-v1`. Rust is the sole canonicalization implementation. The Go
-package loads its versioned C ABI at runtime with cgo.
+package loads its versioned C ABI from an explicit native library path.
 
 **Author:** HTMLTrust contributors
 
-**Date:** 2026-08-29
+**Date:** 2026-08-30
 
 **Version:** 0.3.0 release candidate
 
-**Status:** Linux amd64 and cgo validation lane
+**Status:** Desktop C ABI adapter
 
 **Readers:** Go developers and service integrators
 
@@ -18,8 +18,10 @@ package loads its versioned C ABI at runtime with cgo.
 
 ## Prerequisites and shortest test
 
-Install Go 1.25 or newer, a C compiler, cgo, and Linux amd64. Build the Rust
-library first, then run the package tests with its absolute path:
+Install Go 1.25 or newer. Unix builds also need cgo and a C compiler. Windows
+AMD64 and ARM64 use the native Win32 loader and work with `CGO_ENABLED=0`.
+Build the Rust library first, then run the package tests with its absolute
+path:
 
 ```sh
 make core-artifacts
@@ -79,6 +81,23 @@ if err != nil {
 The adapter does not search the executable directory, current directory, or
 system library paths. The library and its `MANIFEST.txt` should be selected by
 application configuration as one reviewed artifact set.
+
+## Platform artifacts
+
+The primary desktop runtime targets are Linux, macOS, and Windows on x86_64
+and ARM64. Linux i686 and Windows i686 are C ABI compatibility lanes. Use the
+target-specific archive from the [platform artifact guide](../docs/PLATFORM-ARTIFACTS.md)
+and pass its absolute native library path to `NewRustCore`.
+
+On supported Unix systems, the adapter uses cgo with `dlopen` and `dlsym`.
+Windows AMD64 and ARM64 use `LoadLibraryW` and `GetProcAddress` through Go's
+native Windows support. The Go adapter does not support Windows i686; that
+archive is for direct C ABI consumers.
+
+The adapter does not choose or download an archive. Keep the archive's
+`manifest.json` and checksum beside the application release configuration.
+CI artifacts are unsigned and unpublished. Android, iOS, and JavaScript have
+separate package layouts described in the platform guide.
 
 ## C ABI behavior
 
