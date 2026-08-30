@@ -1,82 +1,58 @@
-# Cross-language conformance suite
+# Cross-language conformance
 
-This directory defines the byte-level contract for the HTMLTrust
-Canonicalization bindings. A fixture contains one input and the output that
-every binding must produce. A changed canonical output is a protocol change.
+This directory defines the byte-level contract for HTMLTrust
+Canonicalization. Rust produces the canonical result. The JavaScript, Go,
+Python, and PHP runners load the Rust artifact and compare their adapter
+output with the checked-in fixtures.
 
-Status: required for binding changes
-Readers: binding contributors and release reviewers
+**Author:** HTMLTrust contributors
+
+**Date:** 2026-08-29
+
+**Version:** 0.3.0 release candidate
+
+**Status:** Required for core and adapter changes
+
+**Readers:** Binding contributors and release reviewers
+
+**Reading time:** 4 minutes
 
 ## Run the suite
 
-Run every unit suite and this conformance suite in containers from a clean
-checkout:
+Docker builds Rust and the FFI library before starting the adapter services:
 
 ```sh
 ./scripts/test-in-docker.sh
 ```
 
-From the repository root, install the dependencies for the bindings you want
-to run, then run:
+This is the supported complete path. For a local run, build artifacts first and
+set both paths:
 
 ```sh
+make core-artifacts
+export HTMLTRUST_RUST_CORE_LIB=/absolute/path/to/libhtmltrust_canonicalization_ffi.so
+export HTMLTRUST_WASM_PKG=/absolute/path/to/wasm-node/htmltrust_canonicalization_ffi.js
 make conformance
 ```
 
-The command runs JavaScript, Go, PHP, Python, and Rust in that order. A
-missing executable is reported as `MISSING` and does not fail a local run.
-Require every toolchain in CI or before a release:
+`make conformance` requires Rust, Node.js, Go with cgo, Python, PHP with FFI,
+and the configured artifacts. A missing toolchain or artifact is an error.
+Per-language commands are `make conformance-js`, `make conformance-go`,
+`make conformance-php`, `make conformance-python`, and
+`make conformance-rust`.
+
+The Python vector check uses the same `HTMLTRUST_RUST_CORE_LIB` path:
 
 ```sh
-REQUIRE_ALL_LANGUAGES=1 make conformance
+HTMLTRUST_RUST_CORE_LIB=/absolute/path/to/libhtmltrust_canonicalization_ffi.so \
+  python tools/gen-test-vectors.py --check
 ```
 
-Run one binding while developing:
+## Fixture format
 
-```sh
-make conformance-js
-make conformance-go
-make conformance-php
-make conformance-python
-make conformance-rust
-```
-
-The runners also work directly:
-
-```sh
-node conformance/runners/run-javascript.mjs
-(cd conformance/runners && go run ./run-go.go)
-php conformance/runners/run-php.php
-python3 conformance/runners/run-python.py
-cargo run --locked --release --manifest-path conformance/runners/run-rust/Cargo.toml
-```
-
-Each runner prints one line per fixture:
-
-```text
-PASS conformance/fixtures/normalize/basic-ascii.json
-FAIL conformance/fixtures/normalize/curly-double-quotes.json
-  expected: "\"Hello\""
-  got:      "“Hello”"
-PASS conformance/fixtures/extract/url-http-rejected.json  (expected error url-policy-violation)
-```
-
-Exit status `0` means every applicable fixture passed. Exit status `1` means
-an output or expected error differed. A missing toolchain becomes exit status
-`2` when `REQUIRE_ALL_LANGUAGES=1`.
-
-## Fixture suites
-
-The directory contains four suites:
-
-| Directory | Binding function | Input |
-|---|---|---|
-| `normalize/` | `normalizeText` | A text string |
-| `extract/` | `extractCanonicalText` | An HTML fragment, with optional `baseURL` |
-| `claims/` | `canonicalizeClaims` | A JSON object whose values are strings |
-| `jcs/` | `canonicalizeJsonDocument` | A raw JSON document string |
-
-Every fixture is a JSON object with a matching filename and `name` field:
+Fixtures live under `fixtures/normalize`, `fixtures/extract`,
+`fixtures/claims`, and `fixtures/jcs`. Each file has a matching `name`, an
+`input`, and either `expected` or a stable `error` code.
 
 ```json
 {
@@ -87,82 +63,59 @@ Every fixture is a JSON object with a matching filename and `name` field:
 }
 ```
 
-`expected` is compared as a string. The runners encode and compare the UTF-8
-bytes returned by each binding. A fixture may include:
+`baseURL` supplies the resolved document URL for relative HTML links. `repeat`
+tests resource limits without storing a large input. Use `\\uXXXX` escapes
+when a fixture depends on an invisible or combining code point. Error values
+are machine codes such as `resource-limit-exceeded` and
+`url-policy-violation`.
 
-- `baseURL` for resolving relative `href` and `src` values.
-- `repeat` for testing resource limits without storing a large input file.
-  String inputs are repeated directly. For a claims object, every string value
-  is repeated while claim names remain unchanged.
-- `error` when the binding must reject the input. The value is a stable error
-  code such as `resource-limit-exceeded` or `url-policy-violation`.
+The four fixture suites cover text normalization, HTML extraction, claims
+serialization, and strict JSON canonicalization. Adapter unit tests cover the
+direct-claims operation, which reads metadata from direct children of the
+first signed section.
 
-Use `\uXXXX` escapes for invisible or combining characters when the exact code
-point matters. Keep the description specific about the rule under test.
+## Update a fixture
 
-## Add or change a fixture
-
-1. Add a JSON file to the suite directory. The filename and `name` must match.
-2. Set `expected` to an empty string while writing the case.
-3. Generate the expected value from the current Python binding:
-
-   ```sh
-   python3 conformance/runners/run-python.py --update
-   ```
-
-4. Inspect the diff. Run every available binding:
-
-   ```sh
-   REQUIRE_ALL_LANGUAGES=1 make conformance
-   ```
-
-5. If a binding disagrees, fix the binding or document the known divergence.
-   Do not change `expected` to hide a disagreement.
-
-The update command rewrites all fixture `expected` fields. Review every
-changed file before committing.
-
-## Fixture count
-
-The runner counts JSON files from disk and prints the count in its summary.
-The same command shows the current total without running a binding:
+Rust is the source for expected bytes. After changing a rule, run:
 
 ```sh
-find conformance/fixtures -mindepth 2 -maxdepth 2 -type f -name '*.json' | wc -l
+make conformance-update
 ```
 
-This count includes all four suites, including expected-error cases.
+The update requires the Rust toolchain and configured native and Node WASM
+artifacts. Inspect every changed fixture, then run `make test-docker` before
+submitting the change. A fixture expected value must never hide an adapter
+disagreement.
 
-## Binding coverage
+## Runner output
 
-The five in-tree bindings currently implement every suite:
+Each runner reports the fixture path and result:
 
-| Function | JavaScript | Go | PHP | Python | Rust |
-|---|:---:|:---:|:---:|:---:|:---:|
-| `normalizeText` | yes | yes | yes | yes | yes |
-| `extractCanonicalText` | yes | yes | yes | yes | yes |
-| `canonicalizeClaims` | yes | yes | yes | yes | yes |
-| `canonicalizeJsonDocument` | yes | yes | yes | yes | yes |
+```text
+PASS conformance/fixtures/normalize/basic-ascii.json
+PASS conformance/fixtures/extract/url-http-rejected.json  (expected error url-policy-violation)
+```
 
-A future runner may print `SKIP` for a suite that its binding does not
-implement. `SKIP` is informational; an implemented fixture that differs is a
-failure.
+Exit status `0` means every fixture passed. Exit status `1` means output or an
+expected error differed. Other statuses identify a runner or setup failure.
 
-## Files in this directory
+## Repository layout
 
 ```text
 conformance/
-  README.md
-  run-all.sh
   fixtures/{normalize,extract,claims,jcs}/
-  runners/
-    run-javascript.mjs
-    run-go.go
-    run-php.php
-    run-python.py
-    run-rust/
+  runners/run-javascript.mjs
+  runners/run-go.go
+  runners/run-php.php
+  runners/run-python.py
+  runners/run-rust/
 ```
 
-The runner modules use the local bindings. They do not download a published
-version of this repository, so a conformance run always tests the checkout
-under review.
+The runners import the checkout under review. They do not download a released
+package. The maintained native test lane is Linux amd64. The same artifact
+directory also contains `wasm-node/` and `wasm-web/` for JavaScript package
+layout checks.
+
+For a failure, report the command, target, tool versions, artifact
+`MANIFEST.txt`, fixture path, and complete output in a GitHub issue. See the
+[shared-core guide](../docs/RUST-SHARED-CORE.md) for ABI and ownership rules.

@@ -1,70 +1,96 @@
-# HTMLTrust Canonicalization FFI
+# HTMLTrust Rust FFI
 
-This crate exposes the Rust `htmltrust-c14n-v1` implementation through a C ABI
-and WebAssembly. The other language directories contain independent
-compatibility implementations plus adapters that can call this shared core.
-The [shared-core guide](../docs/RUST-SHARED-CORE.md) defines the migration
-boundary and release rules.
+This crate exposes the Rust `htmltrust-c14n-v1` implementation through a
+versioned C ABI and generated WebAssembly. Go, Python, and PHP use the native
+library. JavaScript uses the packaged Node.js or browser WebAssembly layout.
 
-## Test and build
+**Author:** HTMLTrust contributors
 
-From the repository root, this builds the native library, static library,
-public header, and generated Node.js WebAssembly module. It then runs the four
-language adapters against that artifact set:
+**Date:** 2026-08-29
+
+**Version:** 0.3.0 release candidate
+
+**Status:** Required Rust boundary for adapter builds
+
+**Readers:** FFI maintainers and application integrators
+
+**Reading time:** 3 minutes
+
+## Prerequisites and shortest test
+
+The maintained native lane is Linux amd64. Install Rust 1.86 or newer, a C
+compiler, and `wasm-bindgen-cli` for WebAssembly output. From the repository
+root, the complete supported path uses Docker:
 
 ```sh
-make test-shared-core
+make core-artifacts
+make test-docker
 ```
 
-The command prints the artifact directory and writes `MANIFEST.txt` with the
-ABI version, target, tool versions, and checksums.
+`make core-artifacts` prints the disk-backed artifact directory. The output
+contains the native library, static library, public header, `wasm-node/`,
+`wasm-web/`, and `MANIFEST.txt`.
 
-For a native-only developer build:
+For native crate development:
 
 ```sh
 cargo test --locked --manifest-path ffi/Cargo.toml
 cargo build --locked --release --manifest-path ffi/Cargo.toml
 ```
 
-For a manual Node.js WebAssembly build, install the target and the exact CLI
-version recorded in `ffi/Cargo.lock`, then generate the JavaScript loader:
+## Native ABI
+
+New integrations use the length-based declarations in
+[`include/htmltrust_canonicalization.h`](include/htmltrust_canonicalization.h):
+
+- `htmltrust_abi_version_v1`
+- `htmltrust_normalize_text_v1`
+- `htmltrust_extract_canonical_text_options_v1`
+- `htmltrust_extract_claims_from_signed_section_v1`
+- `htmltrust_canonicalize_claims_v1`
+- `htmltrust_canonicalize_json_document_v1`
+- `htmltrust_bytes_free`
+
+Inputs carry a pointer and byte length, so embedded NUL bytes are valid. A
+zero-length input may use a null pointer. Status `0` returns canonical UTF-8.
+Status `1` returns an allocated UTF-8 machine error code. Status `2` reports
+an invalid pointer argument and allocates no output. Release every allocated
+output with `htmltrust_bytes_free`.
+
+The direct-claims operation returns a JSON object for claims found on direct
+children of the first signed section. It follows the same status and ownership
+contract. The v1 profile limits input and output to 1 MiB and returns stable
+machine error codes.
+
+## WebAssembly output
+
+The maintained build generates both targets from the same Rust input:
 
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install --locked --version 0.2.126 wasm-bindgen-cli
-export CARGO_TARGET_DIR=/path/to/a/private/cargo-target
+export CARGO_TARGET_DIR=/path/to/private/cargo-target
 (cd ffi && cargo build --locked --release --target wasm32-unknown-unknown)
-wasm-bindgen --target nodejs --out-dir path/to/wasm-node \
+wasm-bindgen --target nodejs --out-dir /path/to/wasm-node \
+  "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/htmltrust_canonicalization_ffi.wasm"
+wasm-bindgen --target web --out-dir /path/to/wasm-web \
   "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/htmltrust_canonicalization_ffi.wasm"
 ```
 
-The maintained build script currently emits Node.js bindings. Browser output
-and browser package installation remain release work.
+Keep both generated directories from one build. JavaScript calls
+`initializeNodeWasm()` or `initializeBrowserWasm()` before synchronous
+operations when using the low-level adapter. The package entry points use the
+corresponding packaged directories.
 
-## Native API
+## Ownership and errors
 
-New integrations should use the length-based v1 functions declared in
-[`include/htmltrust_canonicalization.h`](include/htmltrust_canonicalization.h).
-They accept explicit byte lengths, reject invalid UTF-8, and clear output
-pointers before returning an error. Release every status-0 or status-1 buffer
-with `htmltrust_bytes_free`. A zero-length base URL means that no base URL was
-supplied, regardless of whether its pointer is null.
+The caller owns every output buffer returned with status `0` or `1` and must
+release it with the exported free function. The C boundary catches Rust panics
+and reports `core-internal-error`. Process abort and memory exhaustion remain
+process failures. Adapters validate ABI version 1 and required symbols before
+processing application data.
 
-The ABI version is 1. Status 0 means canonical UTF-8 output. Status 1 means an
-allocated UTF-8 error code. Status 2 means invalid pointer arguments and no
-allocation. The versioned operations catch Rust panics and return
-`core-internal-error` with status 1. Memory exhaustion remains a process
-failure. Status-1 results contain a bare machine code without parser detail.
-
-Older C-string symbols remain in the crate for existing callers. They are
-outside the public v1 header and should not be used by new integrations.
-
-## WebAssembly API
-
-Build the generated module with `wasm-bindgen`, then pass its exact module
-object to the JavaScript package's `initializeRustWasm` function. The adapter
-checks `abiVersion()` and all four operation exports before it accepts calls.
-Keep module initialization explicit so an application can pin and audit the
-artifact it loads.
-
-See the exported functions and status-code contracts in [`src/lib.rs`](src/lib.rs).
+See [`src/lib.rs`](src/lib.rs) and the [shared-core integration guide](../docs/RUST-SHARED-CORE.md)
+for the complete contract. Use `make test-docker` after changing the Rust
+boundary. Report failures with the command, artifact manifest, target, and
+complete output in a GitHub issue.

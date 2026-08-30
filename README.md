@@ -1,45 +1,26 @@
 # HTMLTrust Canonicalization
 
-HTMLTrust Canonicalization turns HTML and text into one stable byte sequence.
-Use that sequence before hashing or signing content. The JavaScript, Go, PHP,
-Python, and Rust bindings share the same fixtures and protocol rules.
-The normative rules are maintained in the
-[HTMLTrust IETF draft](https://github.com/HTMLTrust/htmltrust-spec/tree/main/ietf-draft).
-The local [`spec.md`](spec.md) records the earlier text-only design for
-historical reference.
+HTMLTrust Canonicalization produces the stable UTF-8 bytes that HTMLTrust
+applications hash and sign. Rust is the sole canonicalization implementation.
+The language packages call that implementation through its native C ABI or its
+packaged WebAssembly build.
 
-Status: `0.3.0` release candidate for `htmltrust-c14n-v1`
-Previous protocol release: `v0.2.2` (`79b0d52fecd958f8fc7ade713fe0799ca1e79626`)
-Readers: binding users and contributors
+**Author:** HTMLTrust contributors
 
-## Shared Rust core
+**Date:** 2026-08-29
 
-Rust is the executable reference for the `htmltrust-c14n-v1` byte contract.
-JavaScript uses the WebAssembly adapter. Go, Python, and PHP use the versioned
-native C ABI. Rust applications call the crate directly. The four shared-core
-operations are text normalization, HTML extraction, claims serialization, and
-strict JSON canonicalization.
+**Version:** 0.3.0 release candidate
 
-The language packages keep their independent implementations during migration.
-Those implementations provide compatibility coverage and an independent check
-against the protocol fixtures. Signing, verification, key resolution, and
-endorsements remain language-native and consume bytes from the shared core.
+**Status:** Release candidate, Linux amd64 native lane
 
-Read the [shared-core decision and integration guide](docs/RUST-SHARED-CORE.md)
-before wiring an application to a native library or WebAssembly artifact. It
-records the explicit initialization rules, ABI ownership contract, and current
-Linux validation lane.
+**Readers:** Application integrators and binding contributors
 
-## Standalone prerequisites
+**Reading time:** 5 minutes
 
-The Docker test path needs Git and Docker Engine with Compose. Running a
-binding directly also needs the toolchain listed for that binding below.
+## Start here
 
-## Test a fresh checkout
-
-Docker is the shortest path to a complete result. This command installs each
-binding in its own container, runs its unit tests, then checks every shared
-fixture:
+Prerequisites are Git and Docker Engine with the Compose plugin. A complete
+checkout test is:
 
 ```sh
 git clone https://github.com/HTMLTrust/htmltrust-canonicalization.git
@@ -47,302 +28,117 @@ cd htmltrust-canonicalization
 make test-docker
 ```
 
-Use `make test-independent` to test the five language-native implementations.
-Use `make test-shared-core` to build one Rust artifact set and run it through
-the JavaScript, Go, PHP, and Python adapters.
+The pipeline builds Rust and the FFI crate first. It stores the native library,
+Node.js and browser WebAssembly layouts, a staged npm package, the header, and
+the manifest in a disk-backed artifact directory. It then tests every adapter
+against those artifacts.
 
-The script scopes dependency caches to the checkout. It uses `/mnt/bulk` for
-Cargo output when that host mount exists, then falls back to a disk-backed
-`$TMPDIR` or `$HOME/tmp`. It never writes build output under `/tmp`. Generated
-native and Node.js WebAssembly artifacts use the same directory policy; the
-script prints the exact path. Set
-`HTMLTRUST_TEST_SESSION_ID` when concurrent test processes share one checkout.
-Override `HTMLTRUST_CARGO_TARGET_ROOT` or
-`HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT` when needed.
-
-## Install a binding
-
-Choose the binding that matches your application. Each binding declares its
-runtime dependencies in its own manifest.
-
-| Binding | Directory | Runtime requirements |
-|---|---|---|
-| JavaScript | [`javascript/`](javascript/) | Node.js 22 or newer; `parse5` is installed from `package.json` |
-| Go | [`go/`](go/) | Go 1.25 or newer; dependencies are resolved from `go.mod` |
-| PHP | [`php/`](php/) | PHP 8.5 or newer with `dom`, `intl`, `mbstring`, `json`, `openssl`, and `sodium`; Composer |
-| Python | [`python/`](python/) | Python 3.10 or newer; dependencies include `pywhatwgurl` and `rfc8785` |
-| Rust | [`rust/`](rust/) | Rust 1.86 or newer; Cargo uses the committed `Cargo.lock` |
-
-### JavaScript
-
-The root package is the installable package. From a checkout, install its
-declared dependency and run a direct import:
+To build only the shared artifacts:
 
 ```sh
-npm ci
-npm test
-node --input-type=module -e \
-  'import { normalizeText } from "./javascript/index.js"; console.log(normalizeText("A—B"))'
+make core-artifacts
 ```
 
-For a reproducible install in another project, use a published release tag or
-a full SHA that the project has reviewed. Do not install a moving branch. To
-resolve a reviewed tag before its SHA is known, inspect it and pin the result:
+The command prints the absolute artifact directory. `make test-shared-core` is
+an alias for the complete Docker pipeline. Set
+`HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT` to choose the artifact directory and
+`HTMLTRUST_TEST_SESSION_ID` when concurrent sessions share a checkout. Each
+session receives private Cargo target directories.
+
+## Choose a package
+
+| Package | Prerequisites | Test command after dependency install |
+| --- | --- | --- |
+| JavaScript | Node.js 22 or newer, `npm ci` | `HTMLTRUST_WASM_PKG=/absolute/wasm-node/htmltrust_canonicalization_ffi.js npm test` |
+| Go | Go 1.25 or newer, cgo, Linux amd64 | `(cd go && HTMLTRUST_RUST_CORE_LIB=/absolute/lib.so go test ./...)` |
+| Python | Python 3.10 or newer, `python3 -m pip install -e 'python[dev]'` | `HTMLTRUST_RUST_CORE_LIB=/absolute/lib.so python3 -m pytest -q python/tests` |
+| PHP | PHP 8.5 or newer, Composer install in `php/`, `ext-ffi`, `ext-uri`, Linux amd64 | `(cd php && HTMLTRUST_RUST_CORE_LIB=/absolute/lib.so composer test)` |
+| Rust | Rust 1.86 or newer | `cargo test --locked --manifest-path rust/Cargo.toml` |
+
+Go, Python, and PHP require `HTMLTRUST_RUST_CORE_LIB` or an equivalent
+explicit absolute path in application code. Build it with `make
+core-artifacts`, then use `libhtmltrust_canonicalization_ffi.so` from the
+printed directory. PHP configures the shared handle with
+`Canonicalize::configureRustCore` during process startup. See each package
+README for a complete example.
+
+JavaScript uses the packaged Node.js and browser WebAssembly modules. Node
+imports the package entry point, which initializes its packaged module. Browser
+applications call `initializeBrowserWasm()` before synchronous operations.
+
+## What the core does
+
+The core provides text normalization, HTML extraction, direct claim extraction
+from the first signed section, claims serialization, and strict JSON
+canonicalization. It performs no network or file I/O. Signing, verification,
+key resolution, and application policy remain above this byte-producing API.
+
+The normative protocol text is the [HTMLTrust IETF
+draft](https://github.com/HTMLTrust/htmltrust-spec/tree/main/ietf-draft).
+The JSON fixtures under [`conformance/fixtures/`](conformance/fixtures/) are
+the repository's byte-level contract.
+
+## Conformance
+
+The default Docker path runs Rust first and passes its artifacts to every
+adapter. After `make core-artifacts`, a local conformance run needs the
+absolute native library and packaged Node WebAssembly path:
 
 ```sh
-CANON_URL=https://github.com/HTMLTrust/htmltrust-canonicalization.git
-CANON_REF=REPLACE_WITH_REVIEWED_TAG
-CANON_SHA="$(git ls-remote "$CANON_URL" "refs/tags/$CANON_REF" | awk 'NR==1 {print $1}')"
-test "$CANON_SHA" && test "${#CANON_SHA}" -eq 40
-npm install "github:HTMLTrust/htmltrust-canonicalization#$CANON_SHA"
-```
-
-Review the resolved commit before release. A full reviewed SHA can be assigned
-directly to `CANON_SHA`.
-
-#### Rust/WASM adapter
-
-The `@htmltrust/canonicalization/rust-wasm` entry point is a synchronous adapter
-around a generated `wasm-bindgen` module. Applications must initialize it with
-the exact generated module before calling any operation:
-
-```js
-import { createRequire } from "node:module";
-import {
-  initializeRustWasm,
-  extractCanonicalText,
-} from "@htmltrust/canonicalization/rust-wasm";
-
-const generatedWasm = createRequire(import.meta.url)(
-  "/path/to/htmltrust_canonicalization_ffi.js",
-);
-initializeRustWasm(generatedWasm);
-const canonical = extractCanonicalText("<p>Ready.</p>");
-```
-
-`make test-shared-core` generates the current Node.js module and its `.wasm`
-file, then prints their directory. Pin both files to one reviewed build. The
-adapter checks ABI version 1 and fails before use when a required export or
-version is missing. The npm package contains the adapter; the generated module
-is a separate artifact in this release candidate. A browser-target package has
-not been produced yet.
-
-#### Preflight a complete HTML document
-
-The portable-authoring module finds every `<signed-section>` in a complete
-document, resolves the final response URL and first `<base href>`, then
-runs the v1 fragment checks for each region. It returns JSON with a pass/fail
-status, source offsets, canonical content, claims, and stable diagnostic codes.
-
-From a checkout:
-
-```sh
-npm ci
-node javascript/bin/portable-authoring.js \
-  --url https://example.org/articles/example.html \
-  article.html
-```
-
-The command exits `0` when at least one signed region is present and every
-region passes. It exits `1` when a region fails or no region is found. Base
-URL problems include a warning. A malformed, `data:`, or `javascript:` first
-base falls back to the final response URL. Other first-base values remain the
-document base, so a relative signed URL resolved to HTTP fails the HTMLTrust
-URL profile. Later base elements are ignored. The JSON `hint`,
-`context`, and `location` fields identify the source change needed by an
-authoring tool.
-
-The same helper is available to JavaScript consumers:
-
-```js
-import {
-  preflightPortableDocument,
-  wrapSignedSection,
-} from "@htmltrust/canonicalization/portable-authoring";
-
-const result = preflightPortableDocument(html, {
-  documentURL: "https://example.org/articles/example.html",
-});
-const signedFragment = wrapSignedSection("<p>Ready to sign.</p>");
-```
-
-`wrapSignedSection` accepts a well-formed fragment and verifies that wrapping
-preserves canonical content and claims. It rejects document containers and an
-existing signed section, because those inputs need an author decision.
-
-### Go
-
-```sh
-cd go
-go mod download
-go test ./...
-```
-
-For the shared core, build the native artifact and pass its exact absolute path to
-`canonicalize.NewRustCore`. The adapter requires cgo and Linux x86-64 in the
-initial validation lane:
-
-```sh
-make test-shared-core
-```
-
-The command prints the directory containing
-`libhtmltrust_canonicalization_ffi.so`. Use that absolute path when constructing
-the adapter:
-
-```go
-core, err := canonicalize.NewRustCore("/opt/htmltrust/libhtmltrust_canonicalization_ffi.so")
-if err != nil { return err }
-defer core.Close()
-```
-
-The package's existing functions remain the independent compatibility
-implementation.
-
-### PHP
-
-```sh
-cd php
-composer install --no-interaction
-composer test
-```
-
-The PHP API uses PHP 8.5's `Uri\WhatWg\Url` implementation for signed URL
-attributes. Older PHP versions do not satisfy the package requirement.
-
-The optional `HTMLTrust\Canonicalization\RustCore` adapter loads the exact
-native library path and checks ABI version 1 plus every required operation
-during construction. PHP needs the FFI extension in addition to the normal
-package requirements. The extension is optional in `composer.json`, so enable
-it before constructing `RustCore`. PHP's default `ffi.enable=preload` setting
-permits direct construction in CLI processes. A web SAPI needs a system-level
-`ffi.enable=true` setting for this adapter. Review the
-[PHP FFI runtime configuration](https://www.php.net/manual/en/ffi.configuration.php)
-before enabling it in a server process:
-
-```php
-require __DIR__ . '/vendor/autoload.php';
-
-$core = new HTMLTrust\Canonicalization\RustCore(
-    '/opt/htmltrust/libhtmltrust_canonicalization_ffi.so'
-);
-$canonical = $core->normalizeText('A—B');
-```
-
-The existing PHP canonicalization class remains available as an independent
-compatibility implementation.
-
-### Python
-
-```sh
-python3 -m pip install -e 'python[dev]'
-python3 -m pytest -q python/tests
-```
-
-### Rust
-
-```sh
-cargo test --locked --manifest-path rust/Cargo.toml
-```
-
-## Run the conformance suite
-
-The conformance suite is the cross-language contract. It reads every JSON
-fixture under `conformance/fixtures/` and compares the exact output from each
-available runner.
-
-```sh
+export HTMLTRUST_RUST_CORE_LIB=/absolute/path/to/libhtmltrust_canonicalization_ffi.so
+export HTMLTRUST_WASM_PKG=/absolute/path/to/wasm-node/htmltrust_canonicalization_ffi.js
 make conformance
 ```
 
-The command reports a missing toolchain as `MISSING` and continues with the
-other runners. Require all five bindings in CI or before a release:
+Per-language runners are available through `make conformance-js`,
+`conformance-go`, `conformance-python`, `conformance-php`, and
+`conformance-rust`. The adapter runners require the artifact configuration
+shown above where their binding needs it. Use `make conformance-update` only
+when a Rust output change has been reviewed as a protocol change.
 
-```sh
-REQUIRE_ALL_LANGUAGES=1 make conformance
-```
+## Protocol details
 
-The current fixture count is derived at run time. To inspect it without
-running the bindings:
+`normalizeText` applies Unicode NFKC, whitespace, punctuation, and control
+character rules. `extractCanonicalText` parses HTML and requires an explicit
+resolved base URL for relative signed links. `extractClaimsFromSignedSection`
+reads direct claim metadata from the first signed section. Claims and JSON are
+serialized into deterministic UTF-8 bytes.
 
-```sh
-find conformance/fixtures -mindepth 2 -maxdepth 2 -type f -name '*.json' | wc -l
-```
+Inputs and outputs have a 1 MiB limit in the v1 profile. A missing base URL
+means that relative links cannot be resolved. The caller's source-snapshot
+layer computes the document base URL, including HTML `<base>` processing.
 
-See [`conformance/README.md`](conformance/README.md) for fixture format,
-expected errors, and the review process for new cases.
+## Platform and release support
 
-## What gets canonicalized
+The maintained native validation lane is Linux amd64. Go uses cgo. PHP uses
+FFI and requires `ffi.enable` for the SAPI that loads the library. The
+JavaScript package contains both `wasm-node/` and `wasm-web/` generated
+artifact layouts.
 
-`normalizeText` applies these phases in order:
+The removed JavaScript, Go, Python, and PHP implementations remain in Git
+history. For example, use `git log --all -- go/extract.go` or `git show
+v0.2.2`. The previous release is also available at commit
+`79b0d52fecd958f8fc7ade713fe0799ca1e79626`.
 
-1. Unicode NFKC normalization.
-2. Unicode whitespace conversion to ASCII spaces, with runs collapsed.
-3. Curly, guillemet, and CJK quotation marks converted to ASCII quotes.
-4. Dash and hyphen variants converted to ASCII hyphen-minus.
-5. The ellipsis character converted to three periods.
-6. Invisible formatting and bidirectional-control characters removed.
-7. ZWNJ and ZWJ preserved because they can carry meaning.
+## Glossary
 
-The `preserveWhitespace`/`preserve_whitespace` option is retained for 0.2
-compatibility. It is outside the v1 profile, whose callers must use the
-default `false` value; v1 does not bind verbatim whitespace inside `<pre>`.
+- **Canonical bytes:** The exact UTF-8 output used for hashing or signing.
+- **C ABI:** The versioned binary function interface used by Go, Python, and PHP.
+- **Conformance fixture:** A JSON input with an expected output or stable error.
+- **WASM:** WebAssembly, used by the JavaScript package in Node and browsers.
 
-`extractCanonicalText` parses HTML, excludes metadata and executable
-elements, emits boundaries for block elements, and normalizes signed
-`href`, `src`, `alt`, and `aria-label` attributes. Relative `href` and `src`
-values require the document base URL. The portable profile rejects source
-nesting deeper than 256 elements before canonical traversal.
+## Contributing and support
 
-A null or empty base URL means that no base URL was supplied. HTML and
-nonempty base URL inputs each have a 1 MiB ceiling. Raw parser-control
-characters are rejected before an HTML parser can repair or preserve them.
+Run `make test-docker` before submitting a core or adapter change. For an
+issue, open a GitHub issue with the command, platform, tool versions, artifact
+manifest, and complete error output so another contributor can reproduce it.
 
-The canonicalizer does not discover or apply an HTML `<base>` element. The
-source-snapshot layer must compute the document base URL using the HTML
-Standard, use the final response URL as its fallback, and pass that resolved
-URL to the binding. A relative signed URL without that input is rejected.
-
-`canonicalizeClaims` sorts claim names by UTF-8 byte order, normalizes names and
-values, and returns the byte sequence used for signing. The JSON
-canonicalization helper applies strict RFC 8785-style serialization to a raw
-JSON document.
-
-JavaScript, Go, and PHP expose v1 signing-payload helpers. These functions
-derive URL or origin scope, validate the exact UTC timestamp form, and return
-the RFC 8785 signing bytes. The older colon-joined binding helpers remain
-available for 0.2 compatibility.
-
-## Development container
-
-Open the repository in a Dev Container to get Node.js, Go, PHP, Python, and
-Rust. `.devcontainer/setup.sh` installs the root JavaScript package, Python
-test dependencies, PHP Composer dependencies, and Cargo dependencies for the
-Rust, FFI, and conformance crates. The setup script is safe to run again after
-a dependency change.
-
-## Release and compatibility
-
-Canonical output is protocol data. A change to it requires updates to every
-binding and to the conformance fixtures in one change. Consumers that need
-the previous published protocol can pin tag `v0.2.2` or commit
-`79b0d52fecd958f8fc7ade713fe0799ca1e79626`. Release `0.3.0` contains the
-normative v1 parser, URL, resource-limit, and JCS behavior. Tag it after all
-five binding jobs pass.
-
-Go callers must now handle the error returned by `CanonicalizeClaims`.
-`CanonicalizeClaimsStrict` remains as an alias with the same fail-closed
-behavior.
-
-Related repositories:
-
-- [HTMLTrust specification](https://github.com/HTMLTrust/htmltrust-spec)
-- [Hugo integration](../htmltrust-hugo/)
-- [Study 1 reproduction harness](../htmltrust-study1/)
-- [Reference server](https://github.com/HTMLTrust/htmltrust-server-reference)
-- [Reference browser extension](https://github.com/HTMLTrust/htmltrust-browser-reference)
-- [Reference CMS plugins](https://github.com/HTMLTrust/htmltrust-cms-reference)
+Related guides: [Rust shared core](docs/RUST-SHARED-CORE.md), [FFI](ffi/README.md),
+[conformance](conformance/README.md), and the package READMEs in
+[`javascript/`](javascript/), [`go/`](go/), [`python/`](python/), [`php/`](php/),
+and [`rust/`](rust/).
 
 ## License
 
-This project is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0).
+This project is licensed under the [PolyForm Noncommercial License
+1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0).

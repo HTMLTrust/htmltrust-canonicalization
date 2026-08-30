@@ -1,123 +1,91 @@
 # HTMLTrust Canonicalization for Python
 
-This package implements the Python binding for `htmltrust-c14n-v1`. It
-normalizes text, extracts signed content from HTML, canonicalizes claims, and
-canonicalizes raw JSON under RFC 8785. The same shared fixtures run against the
-JavaScript, Go, PHP, and Rust bindings.
+This package provides Python access to the Rust implementation of
+`htmltrust-c14n-v1`. Rust is the sole canonicalization implementation. Python
+loads the versioned C ABI through `RustCore` and an explicit absolute library
+path.
 
-Version: `0.3.0` release candidate
-Python: 3.10 or newer
+**Author:** HTMLTrust contributors
 
-## Optional Rust shared-core adapter
+**Date:** 2026-08-29
 
-`RustCore` calls the same Rust implementation used by the native C ABI. Pass an
-exact absolute path to the shared library. The constructor checks ABI version 1 and the
-required symbols before returning a usable adapter:
+**Version:** 0.3.0 release candidate
+
+**Status:** Linux amd64 native-library validation lane
+
+**Readers:** Python developers and application integrators
+
+**Reading time:** 3 minutes
+
+## Prerequisites and shortest test
+
+Install Python 3.10 or newer. Build the Rust artifact, install the package's
+development dependencies, then run tests with the absolute library path:
+
+```sh
+make core-artifacts
+python3 -m pip install -e 'python[dev]'
+HTMLTRUST_RUST_CORE_LIB=/absolute/path/to/libhtmltrust_canonicalization_ffi.so \
+  python3 -m pytest -q python/tests
+```
+
+The complete Docker path builds the artifact and runs the package and
+conformance checks:
+
+```sh
+make test-docker
+```
+
+## Use `RustCore`
+
+Pass the exact absolute path to the native library. Construction checks ABI
+version 1 and every required operation before returning a usable adapter.
 
 ```python
 from htmltrust_canonicalization import RustCore
 
-core = RustCore("/opt/htmltrust/libhtmltrust_canonicalization_ffi.so")
-canonical = core.normalize_text("A—B")
-```
-
-From the repository root, `make test-shared-core` builds the current Linux
-x86-64 library, tests this adapter, and prints the artifact directory.
-
-The initial validation lane supports Linux x86-64. The independent Python
-functions remain available for compatibility checks and environments without a
-Rust artifact. See the [shared-core guide](../docs/RUST-SHARED-CORE.md) for
-artifact pinning, ownership, and release requirements.
-
-## Test a fresh checkout
-
-From the repository root, Docker runs the Python unit tests and every shared
-conformance fixture:
-
-```sh
-docker compose -f compose.test.yml run --rm python
-```
-
-Run `./scripts/test-in-docker.sh` to test all five language bindings.
-
-## Install
-
-Install the package from this checkout:
-
-```sh
-python3 -m pip install -e 'python[dev]'
-```
-
-For Python-only development from this directory:
-
-```sh
-python3 -m pip install -e '.[dev]'
-python3 -m pytest -q
-```
-
-Runtime dependency versions are pinned in `pyproject.toml` because parser and
-serializer behavior affects signed bytes.
-
-## Public API
-
-- `normalize_text(text, preserve_whitespace=False)` applies the Unicode and
-  punctuation normalization profile. `preserve_whitespace=True` is a legacy
-  0.2 compatibility mode and is outside v1.
-- `extract_canonical_text(html, preserve_whitespace=False, base_url=None)`
-  parses HTML and emits signed text plus semantic attribute records. v1
-  callers must leave `preserve_whitespace` false.
-- `canonicalize_claims(claims)` emits the sorted and escaped claims byte
-  sequence.
-- `extract_claims_from_signed_section(html)` reads direct-child claim metadata.
-- `canonicalize_json_document(document)` validates and canonicalizes one raw
-  JSON document with duplicate-key detection and IEEE 754 number handling.
-
-Each entry point is deterministic and performs no network or file I/O. Text,
-HTML, JSON, and nonempty base URL inputs are limited to 1 MiB. A limit breach
-raises `ValueError("resource-limit-exceeded")`.
-
-## Example
-
-```python
-from htmltrust_canonicalization import (
-    canonicalize_claims,
-    canonicalize_json_document,
-    extract_canonical_text,
-    normalize_text,
+core = RustCore("/absolute/path/to/libhtmltrust_canonicalization_ffi.so")
+text = core.normalize_text("A—B")
+content = core.extract_canonical_text(
+    '<a href="/paper">Paper</a>',
+    base_url="https://example.org/article",
 )
-
-canonical = normalize_text('He said, "Hello…"')
-assert canonical == 'He said, "Hello..."'
-
-content = extract_canonical_text(
-    '<p>Read <a href="/paper">the paper</a>.</p>',
-    base_url='https://example.org/article',
+claims = core.canonicalize_claims({"License": "CC-BY-4.0"})
+found = core.extract_claims_from_signed_section(
+    '<signed-section><meta name="claim:License" content="CC-BY-4.0"></signed-section>'
 )
-
-claims = canonicalize_claims({'License': 'CC-BY-4.0'})
-assert claims == 'License:CC-BY-4.0\n'
-
-payload = canonicalize_json_document('{"z":0,"a":1e30}')
-assert payload == '{"a":1e+30,"z":0}'
+document = core.canonicalize_json_document('{"z":0,"a":1}')
 ```
 
-Relative `href` and `src` attributes require `base_url`. The v1 safe-URL
-profile accepts HTTPS URLs and rejects credentials, control characters, and
-unsupported schemes.
+`HTMLTRUST_RUST_CORE_LIB` is the required integration and conformance setting.
+The adapter does not search the current directory, environment paths, or a
+system library path. Application configuration should select the library and
+its `MANIFEST.txt` from one reviewed build.
 
-`base_url=None` and `base_url=''` both mean that no base URL was supplied.
+## Input and error behavior
 
-The caller's source-snapshot layer must compute the document base URL using the
-HTML Standard, including any `<base>` element, and pass that resolved URL as
-`base_url`. This binding does not discover `<base>` elements itself; relative
-signed URLs are rejected when no base URL is supplied.
+Text, HTML, JSON, and nonempty base URLs have a 1 MiB limit. A missing base URL
+means relative signed links cannot be resolved. The source-snapshot layer
+passes the resolved document URL. Adapter failures raise `RustCoreError` or a
+Python `ValueError` with the stable machine error code.
 
-## Package scope
+The package's direct claim method reads metadata from direct children of the
+first signed section. Signing, verification, key resolution, and network
+policy belong to the consuming HTMLTrust application.
 
-Signature verification and key resolution live in the HTMLTrust client and
-server packages. This binding produces the canonical byte sequences those
-packages hash and sign.
+## Conformance and history
 
-The normative protocol text is maintained in the
-[HTMLTrust specification](https://github.com/HTMLTrust/htmltrust-spec/tree/main/ietf-draft).
-The repository's shared fixtures are the executable cross-language contract.
+The vector generator also needs the same library setting:
+
+```sh
+HTMLTRUST_RUST_CORE_LIB=/absolute/path/to/libhtmltrust_canonicalization_ffi.so \
+  python tools/gen-test-vectors.py --check
+```
+
+See the [root README](../README.md), [shared-core guide](../docs/RUST-SHARED-CORE.md),
+and [conformance README](../conformance/README.md). The maintained native lane
+is Linux amd64. The retained Git history includes `v0.2.2`, available with
+`git show v0.2.2`.
+
+Report failures with the command, target, tool versions, artifact manifest,
+and complete output in a GitHub issue.
