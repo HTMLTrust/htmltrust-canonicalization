@@ -65,9 +65,9 @@ if [[ "$RUN_NATIVE_SMOKE" == true ]]; then
   SMOKE_ROOT="$(mktemp -d "$OUTPUT_ROOT/.smoke-${TARGET}.XXXXXX")"
   trap 'rm -rf -- "$SMOKE_ROOT"' EXIT
   CC_BIN="${CC:-cc}"
-  CFLAGS=()
+  CFLAGS=(-O2)
   if [[ "$TARGET" == "i686-unknown-linux-gnu" ]]; then
-    CFLAGS=(-m32)
+    CFLAGS+=(-m32)
   fi
   echo ">> Dynamic C header smoke test ($TARGET)"
   if [[ "$PLATFORM" == "linux" ]]; then
