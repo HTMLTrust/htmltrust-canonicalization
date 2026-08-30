@@ -1,0 +1,4 @@
+module HTMLTrustCanonicalization {
+    header "htmltrust_canonicalization.h"
+    export *
+}
