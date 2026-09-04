@@ -1,0 +1,276 @@
+name: Platform artifacts
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-artifacts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: "1.90.0"
+  ABI_VERSION: "1"
+  ANDROID_NDK_VERSION: "27.3.13750724"
+  ANDROID_API_LEVEL: "21"
+
+jobs:
+  native-unix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux AMD64
+            slug: linux-amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            dynamic_library: libhtmltrust_canonicalization_ffi.so
+            go_smoke: true
+            multilib: false
+            macos_deployment_target: ""
+          - name: Linux ARM64
+            slug: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            dynamic_library: libhtmltrust_canonicalization_ffi.so
+            go_smoke: true
+            multilib: false
+            macos_deployment_target: ""
+          - name: Linux x86 compatibility
+            slug: linux-x86
+            runner: ubuntu-24.04
+            target: i686-unknown-linux-gnu
+            dynamic_library: libhtmltrust_canonicalization_ffi.so
+            go_smoke: false
+            multilib: true
+            macos_deployment_target: ""
+          - name: macOS AMD64
+            slug: macos-amd64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            dynamic_library: libhtmltrust_canonicalization_ffi.dylib
+            go_smoke: true
+            multilib: false
+            macos_deployment_target: "10.13"
+          - name: macOS ARM64
+            slug: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            dynamic_library: libhtmltrust_canonicalization_ffi.dylib
+            go_smoke: true
+            multilib: false
+            macos_deployment_target: "11.0"
+    env:
+      RUST_TARGET: ${{ matrix.target }}
+      HTMLTRUST_MACOS_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Linux x86 linker support
+        if: matrix.multilib
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-multilib
+
+      - name: Install Rust target
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target "$RUST_TARGET"
+          rustup default "$RUST_VERSION"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.go_smoke
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build and link native artifact
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-targets/htmltrust/${{ matrix.slug }}
+          ARTIFACT_OUTPUT: ${{ runner.temp }}/artifacts/${{ matrix.slug }}
+        run: |
+          if [[ -n "$HTMLTRUST_MACOS_DEPLOYMENT_TARGET" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET="$HTMLTRUST_MACOS_DEPLOYMENT_TARGET"
+          fi
+          package_version="$(awk '
+            $0 == "[package]" { package = 1; next }
+            package && /^\[/ { exit }
+            package && /^version = "/ { gsub(/^version = "|"$/, ""); print; exit }
+          ' ffi/Cargo.toml)"
+          ./scripts/build-native-unix.sh "$RUST_TARGET" "$ARTIFACT_OUTPUT" "$package_version" "$ABI_VERSION"
+
+      - name: Run Go adapter against Rust library
+        if: matrix.go_smoke
+        working-directory: go
+        env:
+          HTMLTRUST_RUST_CORE_LIB: ${{ runner.temp }}/cargo-targets/htmltrust/${{ matrix.slug }}/${{ matrix.target }}/release/${{ matrix.dynamic_library }}
+        run: go test ./...
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: htmltrust-${{ matrix.slug }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.slug }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  native-windows:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows AMD64
+            slug: windows-amd64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            go_smoke: true
+          - name: Windows ARM64
+            slug: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            go_smoke: true
+          - name: Windows x86 compatibility
+            slug: windows-x86
+            runner: windows-2025
+            target: i686-pc-windows-msvc
+            go_smoke: false
+    env:
+      RUST_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust target
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal --target $env:RUST_TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default $env:RUST_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.go_smoke
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build and link native artifact
+        shell: pwsh
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-targets/htmltrust/${{ matrix.slug }}
+          ARTIFACT_OUTPUT: ${{ runner.temp }}/artifacts/${{ matrix.slug }}
+        run: |
+          $Metadata = cargo metadata --no-deps --format-version 1 --manifest-path ffi/Cargo.toml | ConvertFrom-Json
+          $PackageVersion = ($Metadata.packages | Where-Object name -eq "htmltrust-canonicalization-ffi").version
+          & ./scripts/build-native-windows.ps1 `
+            -Target $env:RUST_TARGET `
+            -OutputRoot $env:ARTIFACT_OUTPUT `
+            -Version $PackageVersion `
+            -AbiVersion $env:ABI_VERSION `
+            -CargoTargetDir $env:CARGO_TARGET_DIR
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Go adapter against Rust library
+        if: matrix.go_smoke
+        shell: pwsh
+        working-directory: go
+        env:
+          HTMLTRUST_RUST_CORE_LIB: ${{ runner.temp }}/cargo-targets/htmltrust/${{ matrix.slug }}/${{ matrix.target }}/release/htmltrust_canonicalization_ffi.dll
+        run: |
+          $env:CGO_ENABLED = "0"
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: htmltrust-${{ matrix.slug }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.slug }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android NDK ABIs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust targets
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustup target add \
+            aarch64-linux-android \
+            armv7-linux-androideabi \
+            x86_64-linux-android \
+            i686-linux-android
+
+      - name: Install pinned Android NDK
+        shell: bash
+        run: |
+          ndk="$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION"
+          if [[ ! -f "$ndk/source.properties" ]]; then
+            sdkmanager "ndk;$ANDROID_NDK_VERSION"
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
+      - name: Build and link Android artifacts
+        env:
+          HTMLTRUST_CARGO_TARGET_ROOT: ${{ runner.temp }}/cargo-targets/htmltrust/android
+          HTMLTRUST_ANDROID_ARTIFACTS: ${{ runner.temp }}/artifacts/android
+          HTMLTRUST_ABI_VERSION: ${{ env.ABI_VERSION }}
+        run: ./scripts/build-android-artifacts.sh
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: htmltrust-android
+          path: ${{ runner.temp }}/artifacts/android/
+          if-no-files-found: error
+          retention-days: 14
+
+  apple-mobile:
+    name: Apple mobile XCFramework
+    runs-on: macos-15
+    timeout-minutes: 50
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust targets
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustup target add \
+            aarch64-apple-ios \
+            aarch64-apple-ios-sim \
+            x86_64-apple-ios
+
+      - name: Build and link Apple mobile artifacts
+        env:
+          HTMLTRUST_CARGO_TARGET_ROOT: ${{ runner.temp }}/cargo-targets/htmltrust/apple-mobile
+          HTMLTRUST_IOS_ARTIFACTS: ${{ runner.temp }}/artifacts/apple-mobile
+          HTMLTRUST_ABI_VERSION: ${{ env.ABI_VERSION }}
+        run: ./scripts/build-apple-mobile-artifacts.sh
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: htmltrust-apple-mobile
+          path: ${{ runner.temp }}/artifacts/apple-mobile/
+          if-no-files-found: error
+          retention-days: 14

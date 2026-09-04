@@ -3,18 +3,23 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   shared-core:
     name: Rust core and adapter validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -27,7 +32,7 @@ jobs:
           HTMLTRUST_SHARED_CORE_ARTIFACTS_MOUNT: ${{ runner.temp }}/htmltrust-shared-core-artifacts
         run: ./scripts/test-in-docker.sh
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rust-shared-core-linux-amd64
           path: |
@@ -38,3 +43,7 @@ jobs:
             ${{ runner.temp }}/htmltrust-shared-core-artifacts/npm-dist/
             ${{ runner.temp }}/htmltrust-shared-core-artifacts/wasm-node/
             ${{ runner.temp }}/htmltrust-shared-core-artifacts/wasm-web/
+
+  platform-artifacts:
+    name: Platform artifact matrix
+    uses: ./.github/workflows/platform-artifacts.yml
