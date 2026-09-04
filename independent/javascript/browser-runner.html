@@ -18,14 +18,20 @@
 <h1>HTMLTrust independent-JS conformance -- browser (DOMParser) runner</h1>
 <p>
   This page runs the same conformance/PROTOCOL.md fixtures as
-  conformance-runner.mjs, but through the browser's own DOMParser instead
-  of parse5, exercising canonicalize.js's engine-agnostic algorithm on a
-  second, independent HTML parser. It fetches fixtures from
-  <code>conformance/fixtures.sha256</code> and <code>conformance/fixtures/…</code>
-  relative to this file, so it must be served, not opened as a
-  <code>file://</code> URL: from the repository root run
-  <code>python3 -m http.server 8000</code> and open
+  conformance-runner.mjs, but through the browser's own HTML parser
+  (a detached &lt;template&gt; element's <code>innerHTML</code> setter, fragment
+  context; see adapters/browser-domparser.js) instead of parse5, exercising
+  canonicalize.js's engine-agnostic algorithm on a second, independent HTML
+  parser. It fetches fixtures from <code>conformance/fixtures.sha256</code>
+  and <code>conformance/fixtures/…</code> relative to this file, so it must
+  be served, not opened as a <code>file://</code> URL: from the repository
+  root run <code>python3 -m http.server 8000</code> and open
   <code>http://localhost:8000/independent/javascript/browser-runner.html</code>.
+  Every fixture body is hashed with <code>crypto.subtle.digest</code> and
+  checked against <code>fixtures.sha256</code> before any of them run, the
+  same integrity guarantee <code>--verify-fixtures</code> gives the Node
+  runner; a mismatch aborts the run with an error rather than a silent
+  pass/fail count.
 </p>
 <div id="status" data-state="loading">Loading fixtures…</div>
 <table id="summary"></table>
@@ -34,7 +40,7 @@
 <script type="module">
 import {
   extract,
-  normalizeStandaloneChecked,
+  normalizeChecked,
   canonicalizeClaims,
   canonicalizeJCS,
   HTMLTrustError,
@@ -59,7 +65,7 @@ function applyRepeat(suite, input, repeat) {
 
 function run(suite, input, baseURL) {
   switch (suite) {
-    case 'normalize': return normalizeStandaloneChecked(input);
+    case 'normalize': return normalizeChecked(input);
     case 'extract': return extract(input, { baseURL, parseFragment });
     case 'claims': return canonicalizeClaims(input);
     case 'jcs': return canonicalizeJCS(input);
@@ -73,19 +79,50 @@ async function loadManifest() {
   for (const line of shaText.split('\n')) {
     const t = line.trim();
     if (!t || t.startsWith('#')) continue;
-    const m = t.match(/^[0-9a-f]+\s+(fixtures\/([a-z]+)\/([^/]+)\.json)$/);
-    if (m) entries.push({ relPath: m[1], suite: m[2], name: m[3] });
+    const m = t.match(/^([0-9a-f]+)\s+(fixtures\/([a-z]+)\/([^/]+)\.json)$/);
+    if (m) entries.push({ hash: m[1], relPath: m[2], suite: m[3], name: m[4] });
   }
   return entries;
 }
 
+function toHex(buffer) {
+  return Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Fetch every fixture once, as raw bytes, and hash those bytes with
+ * SubtleCrypto -- the same sha256(path.read_bytes()) check
+ * run-external.py's --verify-fixtures does for the Node runner. Without
+ * this, a browser PASS would say nothing about whether the fixtures
+ * actually served over HTTP are the committed ones.
+ */
+async function fetchAndVerify(manifest) {
+  const bodies = new Map(); // relPath -> ArrayBuffer
+  const mismatches = [];
+  for (const fx of manifest) {
+    const buf = await (await fetch(`../../conformance/${fx.relPath}`)).arrayBuffer();
+    const digest = toHex(await crypto.subtle.digest('SHA-256', buf));
+    if (digest !== fx.hash) {
+      mismatches.push(`${fx.relPath}: expected sha256 ${fx.hash}, got ${digest}`);
+    }
+    bodies.set(fx.relPath, buf);
+  }
+  return { bodies, mismatches };
+}
+
 async function main() {
   const manifest = await loadManifest();
+  const { bodies, mismatches } = await fetchAndVerify(manifest);
+  if (mismatches.length > 0) {
+    throw new Error(`fixture integrity check failed:\n${mismatches.join('\n')}`);
+  }
+
+  const decoder = new TextDecoder('utf-8');
   const counts = {}; // suite -> {pass,total}
   const failures = [];
 
   for (const fx of manifest) {
-    const data = await (await fetch(`../../conformance/${fx.relPath}`)).json();
+    const data = JSON.parse(decoder.decode(bodies.get(fx.relPath)));
     counts[fx.suite] ??= { pass: 0, total: 0 };
     counts[fx.suite].total++;
 

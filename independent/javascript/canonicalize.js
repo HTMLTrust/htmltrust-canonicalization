@@ -62,15 +62,23 @@ export function extract(html, { baseURL, parseFragment } = {}) {
 }
 
 /**
- * The `normalize` conformance suite's entry point: normalizeStandaloneText
- * plus the same 1 MiB source-input ceiling every other suite applies (see
- * the `resource-source-limit` fixture in each suite).
+ * The `normalize` conformance suite's entry point: normalizeText (the
+ * four normalize_text phases, section 4.4, with NO trimming) plus the
+ * same 1 MiB source-input ceiling every other suite applies (see the
+ * `resource-source-limit` fixture in each suite).
+ *
+ * This does not trim, even though the exported name this replaced
+ * (normalizeStandaloneChecked, which called normalizeStandaloneText) did.
+ * That was a confirmed divergence from the Rust core: normalize_text
+ * itself never trims there either, and a leading/trailing space is
+ * caller-specific (see normalizeStandaloneText's doc comment in
+ * lib/text-normalize.js, and README.md's ambiguity 1).
  */
-export function normalizeStandaloneChecked(text) {
+export function normalizeChecked(text) {
   if (utf8ByteLength(text) > MAX_SOURCE_BYTES) {
     fail('resource-limit-exceeded', 'normalize input exceeds 1 MiB');
   }
-  return normalizeStandaloneText(text);
+  return normalizeText(text);
 }
 
 export {

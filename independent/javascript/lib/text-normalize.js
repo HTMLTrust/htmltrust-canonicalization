@@ -145,17 +145,25 @@ export function escapeAt(str) {
 
 /**
  * normalizeText, plus a leading/trailing trim of the single U+0020 spaces
- * phase 3 leaves behind. This is what the `normalize` conformance suite
- * means by "text after the eight normalization phases", and what section
- * 4.6 claim-name/claim-value processing needs (a claim name of a single
- * space normalizes to the empty string, per the `empty-name-fails`
- * fixture). It is deliberately NOT what extraction applies per text node:
- * a node holding "hello " immediately before an inline `<em>world</em>`
- * would lose the word-separating space if trimmed in isolation. Extraction
- * instead assembles the whole buffer first and trims around block
- * boundaries afterward (see extract.js); this function is for a string
- * with no such surrounding context; a claim name/value, or a `normalize`
- * suite request.
+ * phase 3 leaves behind. draft section 4.4 defines one normalize_text
+ * procedure and reuses it, by reference, for several different fields
+ * without saying which of them trim; this function is what this
+ * implementation calls normalize_field in README.md's ambiguity 1, for
+ * the two call sites confirmed (against the Rust core) to trim:
+ *
+ *   - section 4.6 claim name/value ("empty-name-fails": a claim name of
+ *     a single space normalizes to the empty string).
+ *   - section 4.3.2 the alt/aria-label signed attributes (an image
+ *     `alt=" x "` produces the attribute record "...alt:x", not
+ *     "...alt: x").
+ *
+ * It is deliberately NOT what extraction applies to each Text node's own
+ * data, nor what the standalone `normalize` conformance suite calls: a
+ * node holding "hello " immediately before an inline `<em>world</em>`
+ * would lose the word-separating space if trimmed in isolation, and the
+ * Rust core's `normalize` suite output for " a " is " a ", not "a".
+ * Extraction instead assembles the whole buffer first and trims around
+ * block boundaries afterward (see extract.js).
  */
 export function normalizeStandaloneText(input) {
   return normalizeText(input).trim();

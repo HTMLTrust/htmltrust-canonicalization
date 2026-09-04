@@ -1,0 +1,6 @@
+{
+  "name": "parser-optional-end-tag-omitted",
+  "description": "Tag omission (an li closed implicitly by the next li) is not an HTML parse error, but the portable profile requires an explicit end tag for every non-void element.",
+  "input": "<ul><li>a<li>b</ul>",
+  "error": "parser-profile-unsupported"
+}

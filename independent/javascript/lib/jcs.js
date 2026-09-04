@@ -26,6 +26,10 @@
 import { fail, utf8ByteLength } from './errors.js';
 
 const MAX_SOURCE_BYTES = 1024 * 1024; // 1 MiB, resource-limits table.
+// 256 has no row in the draft's resource-limits table (Section 8): it is
+// pinned only by jcs/resource-nesting-limit.json ("nested beyond 256
+// containers") and, independently, by the extract-suite element-depth
+// fixtures that give lib/portable-profile.js the same figure.
 const MAX_CONTAINER_DEPTH = 256;
 
 // --- Parsing ---------------------------------------------------------------

@@ -1,0 +1,6 @@
+{
+  "name": "parser-block-inside-paragraph",
+  "description": "A div start tag implicitly closes an open p, so the later explicit </p> has no p in scope: a misnesting parse error outside the portable profile.",
+  "input": "<p><div>x</div></p>",
+  "error": "parser-profile-unsupported"
+}

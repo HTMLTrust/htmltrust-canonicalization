@@ -1,0 +1,6 @@
+{
+  "name": "parser-attribute-unterminated-reference",
+  "description": "A legacy no-semicolon named reference inside an attribute value is the same missing-semicolon parse error as in text and is outside the portable profile.",
+  "input": "<p><img src=\"https://example.org/i.png\" alt=\"&copy 2024\"></p>",
+  "error": "parser-profile-unsupported"
+}

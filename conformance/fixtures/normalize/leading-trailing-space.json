@@ -1,0 +1,6 @@
+{
+  "name": "leading-trailing-space",
+  "description": "normalize_text performs no trimming; a leading/trailing space survives the four phases unchanged (trimming is caller-specific, see normalize_field).",
+  "input": " a ",
+  "expected": " a "
+}

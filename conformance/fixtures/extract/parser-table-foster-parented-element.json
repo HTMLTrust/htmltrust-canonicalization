@@ -1,0 +1,6 @@
+{
+  "name": "parser-table-foster-parented-element",
+  "description": "An element that the tree builder would foster-parent out of a table is outside the portable profile, even when its tags are explicitly paired.",
+  "input": "<table><p>x</p><tr><td>a</td></tr></table>",
+  "error": "parser-profile-unsupported"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "parser-unknown-named-reference",
+  "description": "A named reference that matches no entry in the HTML named-character-reference table but is semicolon-terminated is the unknown-named-character-reference parse error, outside the portable profile.",
+  "input": "<signed-section><p>&foo;</p></signed-section>",
+  "error": "parser-profile-unsupported"
+}

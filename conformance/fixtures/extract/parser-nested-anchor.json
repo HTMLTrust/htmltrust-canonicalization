@@ -1,0 +1,6 @@
+{
+  "name": "parser-nested-anchor",
+  "description": "An a element nested in an open a is a misnesting parse error (adoption agency), outside the portable profile.",
+  "input": "<p><a href=\"https://a.example/\"><a href=\"https://b.example/\">x</a></a></p>",
+  "error": "parser-profile-unsupported"
+}

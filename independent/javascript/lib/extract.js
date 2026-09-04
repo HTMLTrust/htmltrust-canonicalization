@@ -11,7 +11,7 @@
 // used as this profile's oracle.
 
 import { fail, utf8ByteLength } from './errors.js';
-import { normalizeText, escapeAt } from './text-normalize.js';
+import { normalizeText, normalizeStandaloneText, escapeAt } from './text-normalize.js';
 import { canonicalizeSafeURL, checkBaseURL } from './url-policy.js';
 
 const MAX_OUTPUT_BYTES = 1024 * 1024; // 1 MiB, resource-limits table.
@@ -53,12 +53,14 @@ function emitAttributeRecords(parts, node, baseURL) {
     if (attrName === 'href' || attrName === 'src') {
       normalizedValue = canonicalizeSafeURL(rawValue, baseURL);
     } else {
-      // alt, aria-label: plain-text normalization (section 4.4). Phase 3
-      // maps every source whitespace code point, U+000A included, to a
-      // single space, so a normalized text value can never itself
+      // alt, aria-label: plain-text normalization (section 4.4), trimmed
+      // (normalizeStandaloneText -- confirmed against the Rust core:
+      // alt=" x " must produce the record "...alt:x", not "...alt: x").
+      // Phase 3 maps every source whitespace code point, U+000A included,
+      // to a single space, so a normalized text value can never itself
       // contain a line feed; the draft's "MUST NOT contain U+000A" clause
       // is automatically satisfied here and needs no separate check.
-      normalizedValue = normalizeText(rawValue);
+      normalizedValue = normalizeStandaloneText(rawValue);
     }
 
     ensureAttrSeparator(parts);

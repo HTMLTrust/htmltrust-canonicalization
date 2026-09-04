@@ -10,7 +10,7 @@
 //     node conformance-runner.mjs
 
 import { createInterface } from 'node:readline';
-import { extract, normalizeStandaloneChecked, canonicalizeClaims, canonicalizeJCS, HTMLTrustError } from './canonicalize.js';
+import { extract, normalizeChecked, canonicalizeClaims, canonicalizeJCS, HTMLTrustError } from './canonicalize.js';
 import { parseFragment } from './adapters/node-parse5.mjs';
 
 /**
@@ -36,7 +36,7 @@ function handle(req) {
   const input = applyRepeat(req.suite, req.input, req.repeat);
   switch (req.suite) {
     case 'normalize':
-      return normalizeStandaloneChecked(input);
+      return normalizeChecked(input);
     case 'extract':
       return extract(input, { baseURL: req.baseURL, parseFragment });
     case 'claims':

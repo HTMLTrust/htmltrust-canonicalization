@@ -1,0 +1,8 @@
+{
+  "name": "name-and-value-trimmed",
+  "description": "Claim name and content are normalize_field (trimmed): leading/trailing space in either does not appear in the serialized record.",
+  "input": {
+    " a ": " x "
+  },
+  "expected": "a:x\n"
+}

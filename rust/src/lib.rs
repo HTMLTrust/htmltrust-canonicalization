@@ -2,7 +2,8 @@
 //!
 //! Checked protocol operations:
 //!
-//! - [`normalize_text`] -- the 8-phase HTMLTrust canonicalization pipeline.
+//! - [`normalize_text`] -- the four-phase normalize_text pipeline (draft
+//!   section 4.4).
 //! - [`extract_canonical_text`] -- HTML -> canonical text extraction
 //!   (spec §2.1), parses with `scraper` (html5ever) and walks the DOM.
 //! - [`extract_claims_from_signed_section`] -- direct claim metadata extraction.
@@ -34,9 +35,10 @@ const RESOURCE_LIMIT: &str = "resource-limit-exceeded";
 // (cp, cp).
 // ---------------------------------------------------------------------------
 
-/// Phase 6 + 7: invisible / formatting / bidi characters to strip.
-/// ZWNJ (U+200C) and ZWJ (U+200D) are deliberately preserved -- they are
-/// semantic in Persian, Indic, and emoji.
+/// normalize_text phase 2 (draft section 4.4.2): invisible / formatting /
+/// bidi characters to strip. ZWNJ (U+200C) and ZWJ (U+200D) are
+/// deliberately preserved -- they are semantic in Persian, Indic, and
+/// emoji.
 const STRIP_RANGES: &[(u32, u32)] = &[
     (0x00AD, 0x00AD), // soft hyphen
     (0x200B, 0x200B), // zero-width space
@@ -58,7 +60,7 @@ const STRIP_RANGES: &[(u32, u32)] = &[
     (0xE0100, 0xE01EF),
 ];
 
-/// Phase 2: Unicode whitespace -> U+0020.
+/// normalize_text phase 3 (draft section 4.4.3): Unicode whitespace -> U+0020.
 const WHITESPACE_RANGES: &[(u32, u32)] = &[
     (0x0009, 0x000D), // HT, LF, VT, FF, CR
     (0x0020, 0x0020), // SPACE
@@ -73,7 +75,8 @@ const WHITESPACE_RANGES: &[(u32, u32)] = &[
     (0x3000, 0x3000), // ideographic space
 ];
 
-/// Phase 3: single quotes -> ASCII apostrophe.
+/// normalize_text phase 4 (draft section 4.4.4, punctuation): single
+/// quotes -> ASCII apostrophe.
 const SINGLE_QUOTE_POINTS: &[u32] = &[
     0x2018, // left single quote
     0x2019, // right single quote
@@ -86,7 +89,8 @@ const SINGLE_QUOTE_POINTS: &[u32] = &[
     0x2032, // prime
 ];
 
-/// Phase 3: double quotes -> ASCII double quote.
+/// normalize_text phase 4 (draft section 4.4.4, punctuation): double
+/// quotes -> ASCII double quote.
 const DOUBLE_QUOTE_POINTS: &[u32] = &[
     0x201C, // left double quote
     0x201D, // right double quote
@@ -100,13 +104,15 @@ const DOUBLE_QUOTE_POINTS: &[u32] = &[
     0x301F, // low double prime quotation mark
 ];
 
-/// Phase 3: CJK corner brackets -> ASCII double quote.
+/// normalize_text phase 4 (draft section 4.4.4, punctuation): CJK corner
+/// brackets -> ASCII double quote.
 const CJK_QUOTE_RANGES: &[(u32, u32)] = &[
     (0x300C, 0x300F), // CJK corner brackets
     (0xFE41, 0xFE44), // presentation forms for vertical corner brackets
 ];
 
-/// Phase 4: dashes -> ASCII hyphen-minus.
+/// normalize_text phase 4 (draft section 4.4.4, punctuation): dashes ->
+/// ASCII hyphen-minus.
 const DASH_POINTS: &[u32] = &[
     0x2212, // minus sign
     0xFE58, // small em dash
@@ -116,7 +122,8 @@ const DASH_RANGES: &[(u32, u32)] = &[
     (0x2010, 0x2015), // hyphen .. horizontal bar
 ];
 
-/// Phase 5: ellipsis -> three periods.
+/// normalize_text phase 4 (draft section 4.4.4, punctuation): ellipsis ->
+/// three periods.
 const ELLIPSIS: char = '\u{2026}';
 
 // ---------------------------------------------------------------------------
@@ -136,7 +143,13 @@ fn in_points(c: char, points: &[u32]) -> bool {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Apply the HTMLTrust 8-phase canonicalization pipeline to `text`.
+/// Apply the HTMLTrust four-phase normalize_text pipeline (draft section
+/// 4.4) to `text`: NFKC, strip formatting characters, whitespace mapping
+/// and collapse, punctuation normalization. Performs no trimming;
+/// trimming (normalize_field, draft section 4.4) is caller-specific --
+/// see `extract_canonical_text`'s `alt`/`aria-label` handling and
+/// `canonicalize_claims`'s name/content handling for the two fields that
+/// trim.
 ///
 /// Order matches the JavaScript reference implementation precisely.
 ///
@@ -154,13 +167,13 @@ pub fn normalize_text(text: &str, preserve_whitespace: bool) -> String {
     // Phase 1: NFKC.
     let nfkc: String = text.nfkc().collect();
 
-    // Phases 6 + 7: strip invisible / formatting / bidi characters.
+    // Phase 2: strip invisible / formatting / bidi characters.
     let stripped: String = nfkc
         .chars()
         .filter(|&c| !in_ranges(c, STRIP_RANGES))
         .collect();
 
-    // Phase 2: whitespace normalization.
+    // Phase 3: whitespace normalization.
     let ws: String = if preserve_whitespace {
         stripped
     } else {
@@ -180,7 +193,7 @@ pub fn normalize_text(text: &str, preserve_whitespace: bool) -> String {
         buf
     };
 
-    // Phases 3, 4, 5 in a single pass.
+    // Phase 4: punctuation normalization, in a single pass.
     let mut out = String::with_capacity(ws.len());
     for c in ws.chars() {
         if in_points(c, SINGLE_QUOTE_POINTS) {

@@ -90,3 +90,26 @@ if [[ "$RUN_ADAPTERS" -eq 1 ]]; then
 else
     echo "Rust core artifacts built successfully."
 fi
+
+# The independent JavaScript canonicalizer (independent/javascript/) is a
+# differential-testing oracle, not an adapter over the Rust core it just
+# built -- see independent/javascript/README.md. It runs on the host, not
+# in a container: it needs only Node, never the Rust artifacts above, and
+# --artifacts-only callers (who skip RUN_ADAPTERS) get artifacts alone as
+# documented, with no oracle run. This is what makes the oracle actually
+# useful as a differential signal: it runs every time this script runs,
+# so it cannot silently drift out of sync with a core change.
+if [[ "$RUN_ADAPTERS" -eq 1 ]]; then
+    if command -v node >/dev/null 2>&1; then
+        echo
+        echo "Running independent/javascript validation"
+        (
+            cd "$REPO_ROOT/independent/javascript"
+            npm ci --ignore-scripts
+            npm run conformance
+        )
+    else
+        echo
+        echo "independent/javascript: SKIPPED -- no 'node' in PATH" >&2
+    fi
+fi
