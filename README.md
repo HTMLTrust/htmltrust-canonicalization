@@ -72,6 +72,10 @@ The core provides text normalization, HTML extraction, direct claim extraction
 from the first signed section, claims serialization, and strict JSON
 canonicalization. It performs no network or file I/O. Signing, verification,
 key resolution, and application policy remain above this byte-producing API.
+The JavaScript, Go, and PHP key resolvers implement period-scoped key
+selection (draft §9.10): a `did:web` fragment selects one `verificationMethod`
+by exact id, a bare keyid selects the first non-period entry, and revoked or
+expired entries are returned rather than skipped so the caller can decide.
 
 The normative protocol text is the [HTMLTrust IETF
 draft](https://github.com/HTMLTrust/htmltrust-spec/tree/main/ietf-draft).

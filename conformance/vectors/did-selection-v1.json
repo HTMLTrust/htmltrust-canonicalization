@@ -1,0 +1,350 @@
+{
+  "description": "Period-scoped did:web verification-method selection (draft §9.10 verifier algorithm, steps 1-4). Each case supplies a DID document and a keyid and states the expected resolver outcome: 'resolved' with the selected method's expanded id, period, identity, publicKeyPem and lifecycle fields, or a failure name ('key-resolution-failed' or 'malformed-key-document'). Public keys are the derivation vector of period-keys-v1.json; the anchor #key-1 and its publicKeyPem are the Ed25519 test key of the base signing-profile conformance vector, also used in period-signature-v1.json.",
+  "anchorPublicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----",
+  "cases": [
+    {
+      "name": "exact-fragment-p1",
+      "comment": "Exact-id selection of a period method; period comes from the keyid fragment.",
+      "keyid": "did:web:example.com#p1",
+      "didDocument": {
+        "id": "did:web:example.com",
+        "verificationMethod": [
+          { "id": "#key-1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----" },
+          { "id": "#p1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/k+i5VWXMm69GkGvF3Ip4zpLTn66V3Lx+eMOHrdtxrU=\n-----END PUBLIC KEY-----" },
+          { "id": "#p2", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A=\n-----END PUBLIC KEY-----" },
+          { "id": "#p3", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAPS60r09fcjnJn03s0q30yzXguUU/Fx8X/6GfUX04NRo=\n-----END PUBLIC KEY-----" },
+          { "id": "#p12", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAisijcdb4iHjrqASJxmN6JxZF/2ALWJFGV2E6yQ2HqY8=\n-----END PUBLIC KEY-----" }
+        ]
+      },
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "did:web:example.com#p1",
+        "period": 1,
+        "identity": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/k+i5VWXMm69GkGvF3Ip4zpLTn66V3Lx+eMOHrdtxrU=\n-----END PUBLIC KEY-----",
+        "revoked": false
+      }
+    },
+    {
+      "name": "exact-fragment-p3",
+      "comment": "Same document, a different period fragment.",
+      "keyid": "did:web:example.com#p3",
+      "didDocumentRef": "exact-fragment-p1",
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "did:web:example.com#p3",
+        "period": 3,
+        "identity": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAPS60r09fcjnJn03s0q30yzXguUU/Fx8X/6GfUX04NRo=\n-----END PUBLIC KEY-----",
+        "revoked": false
+      }
+    },
+    {
+      "name": "exact-fragment-key-1",
+      "comment": "Exact-id selection of the anchor by its own fragment. Selection is by exact id, not by 'not a period fragment'; period is 0 because the keyid fragment is not a period fragment.",
+      "keyid": "did:web:example.com#key-1",
+      "didDocumentRef": "exact-fragment-p1",
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "did:web:example.com#key-1",
+        "period": 0,
+        "identity": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----",
+        "revoked": false
+      }
+    },
+    {
+      "name": "bare-keyid-selects-first-anchor",
+      "comment": "No fragment: the first entry in array order whose fragment is not a period fragment. #key-1 is first, so it wins even though assertionMethod is not consulted.",
+      "keyid": "did:web:example.com",
+      "didDocumentRef": "exact-fragment-p1",
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "did:web:example.com#key-1",
+        "period": 0,
+        "identity": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----",
+        "revoked": false
+      }
+    },
+    {
+      "name": "bare-keyid-skips-period-at-position-zero",
+      "comment": "A malformed publisher document with a period method at array position 0. Bare selection MUST still skip it and pick the first non-period entry, here at position 1, never the array's first entry.",
+      "keyid": "did:web:example.com",
+      "didDocument": {
+        "id": "did:web:example.com",
+        "verificationMethod": [
+          { "id": "#p1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/k+i5VWXMm69GkGvF3Ip4zpLTn66V3Lx+eMOHrdtxrU=\n-----END PUBLIC KEY-----" },
+          { "id": "#key-1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----" }
+        ]
+      },
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "did:web:example.com#key-1",
+        "period": 0,
+        "identity": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----",
+        "revoked": false
+      }
+    },
+    {
+      "name": "relative-id-equals-absolute-keyid",
+      "comment": "The target entry's id is written in the relative '#p2' form. A verifier MUST treat it as equal to '<document id>#p2' and select it for the fully-qualified keyid.",
+      "keyid": "did:web:example.com#p2",
+      "didDocumentRef": "exact-fragment-p1",
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "did:web:example.com#p2",
+        "period": 2,
+        "identity": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A=\n-----END PUBLIC KEY-----",
+        "revoked": false
+      }
+    },
+    {
+      "name": "unpublished-period-p4",
+      "comment": "The appendix document (period-signature-v1.json) publishes periods 1, 2, 3 and 12. #p4 names no entry.",
+      "keyid": "did:web:example.com#p4",
+      "didDocumentRef": "exact-fragment-p1",
+      "expected": { "outcome": "key-resolution-failed" }
+    },
+    {
+      "name": "duplicate-expanded-id",
+      "comment": "Two entries expand to the same id (one absolute, one relative). A verifier MUST report malformed-key-document rather than picking either one, even though only one of the two duplicates is the one the keyid names.",
+      "keyid": "did:web:example.com#p1",
+      "didDocument": {
+        "id": "did:web:example.com",
+        "verificationMethod": [
+          { "id": "did:web:example.com#p1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/k+i5VWXMm69GkGvF3Ip4zpLTn66V3Lx+eMOHrdtxrU=\n-----END PUBLIC KEY-----" },
+          { "id": "#p1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A=\n-----END PUBLIC KEY-----" }
+        ]
+      },
+      "expected": { "outcome": "malformed-key-document" }
+    },
+    {
+      "name": "doc-id-mismatch",
+      "comment": "The served document's top-level id does not equal the DID part of the keyid byte for byte.",
+      "keyid": "did:web:example.com#p1",
+      "didDocument": {
+        "id": "did:web:wrong.example",
+        "verificationMethod": [
+          { "id": "#p1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/k+i5VWXMm69GkGvF3Ip4zpLTn66V3Lx+eMOHrdtxrU=\n-----END PUBLIC KEY-----" }
+        ]
+      },
+      "expected": { "outcome": "key-resolution-failed" }
+    },
+    {
+      "name": "doc-id-absent",
+      "comment": "A document with no top-level id at all also fails resolution; a verifier MUST NOT fall back to array position 0.",
+      "keyid": "did:web:example.com#p1",
+      "didDocument": {
+        "verificationMethod": [
+          { "id": "#p1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/k+i5VWXMm69GkGvF3Ip4zpLTn66V3Lx+eMOHrdtxrU=\n-----END PUBLIC KEY-----" }
+        ]
+      },
+      "expected": { "outcome": "key-resolution-failed" }
+    },
+    {
+      "name": "deactivated-document",
+      "comment": "deactivated: true fails resolution regardless of the keyid or the methods present.",
+      "keyid": "did:web:example.com",
+      "didDocument": {
+        "id": "did:web:example.com",
+        "deactivated": true,
+        "verificationMethod": [
+          { "id": "#key-1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----" }
+        ]
+      },
+      "expected": { "outcome": "key-resolution-failed" }
+    },
+    {
+      "name": "fragment-contains-slash",
+      "comment": "Step 1: a fragment containing '/' fails before any document is consulted.",
+      "keyid": "did:web:example.com#p1/x",
+      "didDocumentRef": "exact-fragment-p1",
+      "expected": { "outcome": "key-resolution-failed" }
+    },
+    {
+      "name": "fragment-contains-query",
+      "comment": "Step 1: a fragment containing '?' fails before any document is consulted.",
+      "keyid": "did:web:example.com#p1?x",
+      "didDocumentRef": "exact-fragment-p1",
+      "expected": { "outcome": "key-resolution-failed" }
+    },
+    {
+      "name": "fragment-contains-hash",
+      "comment": "Step 1: splitting at the FIRST '#' leaves a second '#' inside the fragment, which fails.",
+      "keyid": "did:web:example.com#p1#x",
+      "didDocumentRef": "exact-fragment-p1",
+      "expected": { "outcome": "key-resolution-failed" }
+    },
+    {
+      "name": "revoked-period-method-is-returned-not-skipped",
+      "comment": "#p2 carries revoked: true. A period-aware resolver MUST return this entry (with its lifecycle fields) rather than skip it or fall through to another entry, so the caller can report key-revoked. Compare to the pre-period behavior this document also exercises in a legacy resolver: a bare keyid still resolves to #key-1, unaffected by #p2's revocation.",
+      "keyid": "did:web:example.com#p2",
+      "didDocument": {
+        "id": "did:web:example.com",
+        "verificationMethod": [
+          { "id": "#key-1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----" },
+          { "id": "#p1", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/k+i5VWXMm69GkGvF3Ip4zpLTn66V3Lx+eMOHrdtxrU=\n-----END PUBLIC KEY-----" },
+          { "id": "#p2", "type": "Ed25519VerificationKey2020", "controller": "did:web:example.com", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A=\n-----END PUBLIC KEY-----", "revoked": true }
+        ]
+      },
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "did:web:example.com#p2",
+        "period": 2,
+        "identity": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A=\n-----END PUBLIC KEY-----",
+        "revoked": true
+      }
+    },
+    {
+      "name": "url-period-key-document-valid",
+      "comment": "A direct-URL period key document with valid period, identity (same-origin with kid) and matching kid.",
+      "kind": "url",
+      "keyid": "https://keys.example/alice/p2.json",
+      "keyDocument": {
+        "kid": "https://keys.example/alice/p2.json",
+        "algorithm": "ed25519",
+        "publicKeyEncoding": "spki-der",
+        "publicKey": "MCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A",
+        "period": 2,
+        "identity": "https://keys.example/alice.json"
+      },
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "https://keys.example/alice/p2.json",
+        "period": 2,
+        "identity": "https://keys.example/alice.json"
+      }
+    },
+    {
+      "name": "url-period-key-document-cross-origin-identity",
+      "comment": "identity is on a different origin than kid; a direct-URL resolver rejects this as malformed-key-document.",
+      "kind": "url",
+      "keyid": "https://keys.example/alice/p2.json",
+      "keyDocument": {
+        "kid": "https://keys.example/alice/p2.json",
+        "algorithm": "ed25519",
+        "publicKeyEncoding": "spki-der",
+        "publicKey": "MCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A",
+        "period": 2,
+        "identity": "https://evil.example/alice.json"
+      },
+      "expected": { "outcome": "malformed-key-document" }
+    },
+    {
+      "name": "url-period-key-document-missing-identity",
+      "comment": "period is present but identity is absent.",
+      "kind": "url",
+      "keyid": "https://keys.example/alice/p2.json",
+      "keyDocument": {
+        "kid": "https://keys.example/alice/p2.json",
+        "algorithm": "ed25519",
+        "publicKeyEncoding": "spki-der",
+        "publicKey": "MCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A",
+        "period": 2
+      },
+      "expected": { "outcome": "malformed-key-document" }
+    },
+    {
+      "name": "url-period-key-document-kid-mismatch",
+      "comment": "kid does not equal keyid byte for byte.",
+      "kind": "url",
+      "keyid": "https://keys.example/alice/p2.json",
+      "keyDocument": {
+        "kid": "https://keys.example/alice/p2-wrong.json",
+        "algorithm": "ed25519",
+        "publicKeyEncoding": "spki-der",
+        "publicKey": "MCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A",
+        "period": 2,
+        "identity": "https://keys.example/alice.json"
+      },
+      "expected": { "outcome": "malformed-key-document" }
+    },
+    {
+      "name": "url-period-key-document-has-expires",
+      "comment": "expires MUST NOT appear on a period key document.",
+      "kind": "url",
+      "keyid": "https://keys.example/alice/p2.json",
+      "keyDocument": {
+        "kid": "https://keys.example/alice/p2.json",
+        "algorithm": "ed25519",
+        "publicKeyEncoding": "spki-der",
+        "publicKey": "MCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A",
+        "period": 2,
+        "identity": "https://keys.example/alice.json",
+        "expires": "2999-01-01T00:00:00Z"
+      },
+      "expected": { "outcome": "malformed-key-document" }
+    },
+    {
+      "name": "url-period-key-document-period-out-of-range",
+      "comment": "period 0 is reserved and never valid on the wire.",
+      "kind": "url",
+      "keyid": "https://keys.example/alice/p0.json",
+      "keyDocument": {
+        "kid": "https://keys.example/alice/p0.json",
+        "algorithm": "ed25519",
+        "publicKeyEncoding": "spki-der",
+        "publicKey": "MCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A",
+        "period": 0,
+        "identity": "https://keys.example/alice.json"
+      },
+      "expected": { "outcome": "malformed-key-document" }
+    },
+    {
+      "name": "url-period-key-document-period-not-integer",
+      "comment": "period MUST be a JSON integer.",
+      "kind": "url",
+      "keyid": "https://keys.example/alice/p2.json",
+      "keyDocument": {
+        "kid": "https://keys.example/alice/p2.json",
+        "algorithm": "ed25519",
+        "publicKeyEncoding": "spki-der",
+        "publicKey": "MCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A",
+        "period": 2.5,
+        "identity": "https://keys.example/alice.json"
+      },
+      "expected": { "outcome": "malformed-key-document" }
+    },
+    {
+      "name": "url-key-document-without-period-is-unaffected",
+      "comment": "A plain (non-period) key document is unaffected by this section: no kid or identity requirement, period defaults to 0 and identity defaults to the keyid.",
+      "kind": "url",
+      "keyid": "https://keys.example/alice.json",
+      "keyDocument": {
+        "publicKey": "MCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk",
+        "publicKeyEncoding": "spki-der",
+        "algorithm": "ed25519"
+      },
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "https://keys.example/alice.json",
+        "period": 0,
+        "identity": "https://keys.example/alice.json"
+      }
+    },
+    {
+      "name": "url-directory-period-key-document-valid",
+      "comment": "A trust-directory period key document. kid equals the opaque keyid (not a URL); identity is required to be an absolute https URL, but same-origin-with-kid does not apply since kid is not a URL (open issue: no identity-origin rule is yet defined for directory-hosted keys).",
+      "kind": "directory",
+      "keyid": "alice.p2",
+      "keyDocument": {
+        "kid": "alice.p2",
+        "algorithm": "ed25519",
+        "publicKeyEncoding": "spki-der",
+        "publicKey": "MCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A",
+        "period": 2,
+        "identity": "https://directory.example/keys/alice"
+      },
+      "expected": {
+        "outcome": "resolved",
+        "methodId": "alice.p2",
+        "period": 2,
+        "identity": "https://directory.example/keys/alice"
+      }
+    }
+  ]
+}

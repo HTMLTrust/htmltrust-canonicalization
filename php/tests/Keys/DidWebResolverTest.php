@@ -52,12 +52,14 @@ class DidWebResolverTest extends TestCase
     public function testResolvesWithPathSegments(): void
     {
         $captured = ['url' => null];
-        $fetcher  = static function (string $url) use (&$captured): ?array {
+        $did = 'did:web:example.com:user:alice';
+        $fetcher  = static function (string $url) use (&$captured, $did): ?array {
             $captured['url'] = $url;
             return [
                 'body'        => json_encode([
+                    'id' => $did,
                     'verificationMethod' => [
-                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'PEM'],
+                        ['id' => '#key-1', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'PEM'],
                     ],
                 ]),
                 'contentType' => 'application/json',
@@ -65,39 +67,43 @@ class DidWebResolverTest extends TestCase
         };
 
         $resolver = new DidWebResolver($fetcher);
-        $resolved = $resolver->resolve('did:web:example.com:user:alice');
+        $resolved = $resolver->resolve($did);
 
         $this->assertNotNull($resolved);
         $this->assertSame('https://example.com/user/alice/did.json', $captured['url']);
+        $this->assertSame($did . '#key-1', $resolved->methodId);
+        $this->assertSame(0, $resolved->period);
     }
 
     public function testPreservesPercentEncodedPathSegments(): void
     {
         $captured = ['url' => null];
-        $resolver = new DidWebResolver(static function (string $url) use (&$captured): ?array {
+        $did = 'did:web:example.com:foo%2Fbar';
+        $resolver = new DidWebResolver(static function (string $url) use (&$captured, $did): ?array {
             $captured['url'] = $url;
             return [
-                'body' => json_encode(['verificationMethod' => [['publicKeyPem' => 'PEM']]]),
+                'body' => json_encode(['id' => $did, 'verificationMethod' => [['id' => '#key-1', 'publicKeyPem' => 'PEM']]]),
                 'contentType' => 'application/did+json',
             ];
         });
 
-        $this->assertNotNull($resolver->resolve('did:web:example.com:foo%2Fbar'));
+        $this->assertNotNull($resolver->resolve($did));
         $this->assertSame('https://example.com/foo%2Fbar/did.json', $captured['url']);
     }
 
     public function testValidatesAndDecodesEncodedPortAuthority(): void
     {
         $captured = ['url' => null];
-        $resolver = new DidWebResolver(static function (string $url) use (&$captured): ?array {
+        $did = 'did:web:example.com%3A3000:user';
+        $resolver = new DidWebResolver(static function (string $url) use (&$captured, $did): ?array {
             $captured['url'] = $url;
             return [
-                'body' => json_encode(['verificationMethod' => [['publicKeyPem' => 'PEM']]]),
+                'body' => json_encode(['id' => $did, 'verificationMethod' => [['id' => '#key-1', 'publicKeyPem' => 'PEM']]]),
                 'contentType' => 'application/did+json',
             ];
         });
 
-        $this->assertNotNull($resolver->resolve('did:web:example.com%3A3000:user'));
+        $this->assertNotNull($resolver->resolve($did));
         $this->assertSame('https://example.com:3000/user/did.json', $captured['url']);
     }
 
@@ -130,8 +136,9 @@ class DidWebResolverTest extends TestCase
             $captured['url'] = $url;
             return [
                 'body'        => json_encode([
+                    'id' => 'did:web:example.com',
                     'verificationMethod' => [
-                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'PEM'],
+                        ['id' => '#keys-1', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'PEM'],
                     ],
                 ]),
                 'contentType' => '',
@@ -139,8 +146,12 @@ class DidWebResolverTest extends TestCase
         };
 
         $resolver = new DidWebResolver($fetcher);
-        $resolver->resolve('did:web:example.com#keys-1');
+        $resolved = $resolver->resolve('did:web:example.com#keys-1');
         $this->assertSame('https://example.com/.well-known/did.json', $captured['url']);
+        // The fragment never reaches the document URL, but it still governs
+        // exact-id selection (spec §9.10).
+        $this->assertNotNull($resolved);
+        $this->assertSame('did:web:example.com#keys-1', $resolved->methodId);
     }
 
     public function testReturnsNullOnFetchFailure(): void
@@ -170,11 +181,19 @@ class DidWebResolverTest extends TestCase
         $this->assertNull($resolver->resolve('did:web:example.com'));
     }
 
-    public function testReturnsNullWhenNoVerificationMethodHasPem(): void
+    public function testReturnsNullWhenNoNonPeriodMethodExists(): void
     {
+        // A document holding only period methods has no anchor for a bare
+        // keyid to resolve to (spec §9.10): key-resolution-failed, not a
+        // fallback to a period entry.
         $fetcher = static function (string $url): ?array {
             return [
-                'body'        => json_encode(['verificationMethod' => [['type' => 'X']]]),
+                'body'        => json_encode([
+                    'id' => 'did:web:example.com',
+                    'verificationMethod' => [
+                        ['id' => '#p1', 'type' => 'X', 'publicKeyPem' => 'PEM'],
+                    ],
+                ]),
                 'contentType' => 'application/json',
             ];
         };
@@ -182,15 +201,18 @@ class DidWebResolverTest extends TestCase
         $this->assertNull($resolver->resolve('did:web:example.com'));
     }
 
-    public function testPicksFirstVerificationMethodWithPem(): void
+    public function testFirstNonPeriodEntryWinsRegardlessOfPosition(): void
     {
+        // Array position 0 is a period method; bare selection MUST still
+        // skip it (spec §9.10) and select the first non-period entry.
         $fetcher = static function (string $url): ?array {
             return [
                 'body' => json_encode([
+                    'id' => 'did:web:example.com',
                     'verificationMethod' => [
-                        ['type' => 'X'],                                                  // skipped: no pem
-                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'A'],  // chosen
-                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'B'],
+                        ['id' => '#p1', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'PERIOD-1'],
+                        ['id' => '#a', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'A'],
+                        ['id' => '#b', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'B'],
                     ],
                 ]),
                 'contentType' => 'application/json',
@@ -200,17 +222,45 @@ class DidWebResolverTest extends TestCase
         $resolved = $resolver->resolve('did:web:example.com');
         $this->assertNotNull($resolved);
         $this->assertSame('A', $resolved->publicKeyPem);
+        $this->assertSame('did:web:example.com#a', $resolved->methodId);
+        $this->assertSame(0, $resolved->period);
     }
 
-    public function testSkipsRevokedAndExpiredMethods(): void
+    public function testFirstNonPeriodEntryWithoutPemIsMalformed(): void
     {
+        // Selection is by array order among non-period entries; there is no
+        // fall-through to a later entry when the selected one lacks
+        // publicKeyPem (spec §9.10 step 4).
         $fetcher = static function (string $url): ?array {
             return [
                 'body' => json_encode([
+                    'id' => 'did:web:example.com',
                     'verificationMethod' => [
-                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'REVOKED', 'revoked' => true],
-                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'EXPIRED', 'expires' => '2000-01-01T00:00:00Z'],
-                        ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'LIVE', 'expires' => '2999-01-01T00:00:00Z'],
+                        ['id' => '#a', 'type' => 'X'], // selected, but has no publicKeyPem
+                        ['id' => '#b', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'B'],
+                    ],
+                ]),
+                'contentType' => 'application/json',
+            ];
+        };
+        $resolver = new DidWebResolver($fetcher);
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('malformed-key-document');
+        $resolver->resolve('did:web:example.com');
+    }
+
+    public function testDoesNotSkipRevokedOrExpiredMethods(): void
+    {
+        // Spec §9.10: revoked or expired entries are still returned, with
+        // their lifecycle fields, so the caller can report "key-revoked".
+        // The resolver itself never skips to another entry on this basis.
+        $fetcher = static function (string $url): ?array {
+            return [
+                'body' => json_encode([
+                    'id' => 'did:web:example.com',
+                    'verificationMethod' => [
+                        ['id' => '#a', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'REVOKED', 'revoked' => true],
+                        ['id' => '#b', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'LIVE'],
                     ],
                 ]),
                 'contentType' => 'application/did+json',
@@ -219,9 +269,9 @@ class DidWebResolverTest extends TestCase
 
         $resolved = (new DidWebResolver($fetcher))->resolve('did:web:example.com');
         $this->assertNotNull($resolved);
-        $this->assertSame('LIVE', $resolved->publicKeyPem);
-        $this->assertFalse($resolved->revoked);
-        $this->assertSame('2999-01-01T00:00:00Z', $resolved->expires);
+        $this->assertSame('REVOKED', $resolved->publicKeyPem);
+        $this->assertTrue($resolved->revoked);
+        $this->assertTrue($resolved->isRevoked());
     }
 
     public function testDeactivatedDocumentDoesNotResolve(): void
@@ -238,14 +288,18 @@ class DidWebResolverTest extends TestCase
         $this->assertNull($resolver->resolve('did:web:example.com'));
     }
 
-    public function testMalformedExpiryIsRejectedAndResolverContinues(): void
+    public function testMalformedExpiryIsReturnedAsIsForCallerToReject(): void
     {
+        // A malformed expires value on the selected entry is not this
+        // resolver's decision: it is returned as-is, and ResolvedKey's own
+        // lifecycle policy (isRevoked()) treats it as revoked.
         $resolver = new DidWebResolver(static function (string $url): ?array {
             return [
                 'body' => json_encode([
+                    'id' => 'did:web:example.com',
                     'verificationMethod' => [
-                        ['publicKeyPem' => 'BAD', 'expires' => '2026-01-01T00:00:00+00:00'],
-                        ['publicKeyPem' => 'GOOD', 'expires' => '2999-01-01T00:00:00Z'],
+                        ['id' => '#a', 'publicKeyPem' => 'BAD', 'expires' => '2026-01-01T00:00:00+00:00'],
+                        ['id' => '#b', 'publicKeyPem' => 'GOOD', 'expires' => '2999-01-01T00:00:00Z'],
                     ],
                 ]),
                 'contentType' => 'application/did+json',
@@ -253,7 +307,9 @@ class DidWebResolverTest extends TestCase
         });
         $resolved = $resolver->resolve('did:web:example.com');
         $this->assertNotNull($resolved);
-        $this->assertSame('GOOD', $resolved->publicKeyPem);
+        $this->assertSame('BAD', $resolved->publicKeyPem);
+        $this->assertSame('2026-01-01T00:00:00+00:00', $resolved->expires);
+        $this->assertTrue($resolved->isRevoked());
     }
 
     public function testInfersEcdsaFromMethodType(): void
@@ -261,8 +317,9 @@ class DidWebResolverTest extends TestCase
         $fetcher = static function (string $url): ?array {
             return [
                 'body' => json_encode([
+                    'id' => 'did:web:example.com',
                     'verificationMethod' => [
-                        ['type' => 'EcdsaSecp256r1VerificationKey2019', 'publicKeyPem' => 'PEM'],
+                        ['id' => '#key-1', 'type' => 'EcdsaSecp256r1VerificationKey2019', 'publicKeyPem' => 'PEM'],
                     ],
                 ]),
                 'contentType' => 'application/json',
@@ -281,8 +338,9 @@ class DidWebResolverTest extends TestCase
         mkdir($fixtureDir . '/.well-known', 0700, true);
         $fixturePath = $fixtureDir . '/.well-known/did.json';
         file_put_contents($fixturePath, json_encode([
+            'id' => 'did:web:example.com',
             'verificationMethod' => [
-                ['type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'FROM_FILE'],
+                ['id' => '#key-1', 'type' => 'Ed25519VerificationKey2020', 'publicKeyPem' => 'FROM_FILE'],
             ],
         ]));
 

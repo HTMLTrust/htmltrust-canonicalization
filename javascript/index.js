@@ -487,9 +487,69 @@ function pemFromKeyDocument(document) {
  * @property {string} keyid
  * @property {string} publicKeyPem
  * @property {string} algorithm
+ * @property {number} period Period index (spec §9.10); 0 when `keyid` has no
+ *   period fragment, or the resolved key document has no `period` member.
+ * @property {string} identity The DID with no fragment, the key document's
+ *   `identity`, or `keyid` itself for a non-period URL key (spec §9.10).
+ * @property {string} methodId The expanded id of the selected DID
+ *   verification method, or `keyid` for a URL-form key (spec §9.10).
  * @property {boolean} [revoked] `revoked: true` from the key document (spec §8.2).
  * @property {string} [expires] RFC3339 expiry from the key document (spec §8.2).
  */
+
+// Period fragment grammar (spec §9.10): "p" followed by a decimal integer,
+// no sign, no leading zero, value 1 through 2147483647. Index 0 is reserved
+// and never appears in a fragment.
+const PERIOD_FRAGMENT_RE = /^p([1-9][0-9]{0,9})$/;
+const MAX_PERIOD = 2147483647;
+
+/** Parse a DID URL fragment as a period index, or null if it is not one. */
+function parsePeriodFragment(fragment) {
+  const match = PERIOD_FRAGMENT_RE.exec(fragment);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PERIOD) return null;
+  return value;
+}
+
+/** Split a did: keyid at the first '#' into the DID part and the fragment. */
+function splitDidFragment(keyid) {
+  const hashIndex = keyid.indexOf("#");
+  if (hashIndex === -1) return { did: keyid, fragment: "" };
+  return { did: keyid.slice(0, hashIndex), fragment: keyid.slice(hashIndex + 1) };
+}
+
+/** Expand a relative `#fragment` verificationMethod id against the document id. */
+function expandMethodId(id, docId) {
+  if (typeof id !== "string" || id === "") return null;
+  return id.startsWith("#") ? `${docId}${id}` : id;
+}
+
+function methodFragmentOf(expandedId) {
+  const hashIndex = expandedId.indexOf("#");
+  return hashIndex === -1 ? "" : expandedId.slice(hashIndex + 1);
+}
+
+// Spec §12.9/§13.4: DID documents and key documents follow HTTP cache
+// semantics with a floor of 60 seconds and a ceiling of 3600 seconds
+// regardless of headers. Absent an explicit max-age, key documents are
+// cached for the recommended ceiling (one hour).
+const DOCUMENT_CACHE_FLOOR_MS = 60_000;
+const DOCUMENT_CACHE_CEILING_MS = 3_600_000;
+const NEGATIVE_CACHE_TTL_MS = 60_000;
+
+function parseMaxAgeMs(headers) {
+  const cacheControl = headers?.get?.("cache-control") ?? "";
+  const match = /(?:^|,)\s*max-age\s*=\s*(\d+)/i.exec(cacheControl);
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
+}
+
+function clampDocumentTtlMs(rawMs) {
+  if (rawMs === null) return DOCUMENT_CACHE_CEILING_MS;
+  return Math.min(Math.max(rawMs, DOCUMENT_CACHE_FLOOR_MS), DOCUMENT_CACHE_CEILING_MS);
+}
 
 /**
  * Spec §8.2: a `revoked` value of true, or an `expires` value in the past, MUST
@@ -534,7 +594,13 @@ function keyLifecycleFields(doc) {
  *   Returns null if this resolver doesn't apply to the given keyid.
  */
 
-async function fetchJson(url, fetchImpl) {
+/**
+ * Fetch and parse a remote document, returning its JSON form (`doc`), or its
+ * raw body (`rawText`) when the content type is not JSON-ish, plus the
+ * clamped cache TTL for the response. Returns null on any fetch or
+ * size-limit failure that is not itself resource-limit-exceeded.
+ */
+async function fetchRemoteDocument(url, fetchImpl) {
   const f = fetchImpl ?? globalThis.fetch;
   if (!f) throw new Error("no fetch implementation available");
   const res = await f(url);
@@ -546,15 +612,40 @@ async function fetchJson(url, fetchImpl) {
   const ct = res.headers.get?.("content-type") ?? "";
   const mediaType = ct.split(";", 1)[0].trim().toLowerCase();
   const body = await readResponseBodyLimited(res);
+  const ttlMs = clampDocumentTtlMs(parseMaxAgeMs(res.headers));
   if (mediaType === "application/json" || mediaType.endsWith("+json")) {
     try {
-      return JSON.parse(body);
+      return { doc: JSON.parse(body), rawText: null, ttlMs };
     } catch {
       return null;
     }
   }
   // Treat as raw PEM if content-type is text-ish.
-  return { _rawText: body };
+  return { doc: null, rawText: body, ttlMs };
+}
+
+/**
+ * A per-resolver document cache with a floor/ceiling TTL (spec §12.9,
+ * §13.4). `load` serves a fresh fetch within TTL from cache; `bypassCache`
+ * forces a fetch regardless of freshness (used for the single refetch of
+ * spec §9.10 step 8).
+ */
+function createDocumentCache(nowFn = Date.now) {
+  const cache = new Map();
+  return {
+    async load(url, fetchImpl, { bypassCache = false } = {}) {
+      const now = nowFn();
+      if (!bypassCache) {
+        const cached = cache.get(url);
+        if (cached && now - cached.fetchedAt < cached.ttlMs) return cached;
+      }
+      const fetched = await fetchRemoteDocument(url, fetchImpl);
+      if (!fetched) return null;
+      const entry = { ...fetched, fetchedAt: now };
+      cache.set(url, entry);
+      return entry;
+    },
+  };
 }
 
 async function readResponseBodyLimited(response) {
@@ -607,37 +698,132 @@ async function readResponseBodyLimited(response) {
 }
 
 /**
- * Build a did:web resolver. Resolves keyids of the form `did:web:<host>[:<path>]`
- * by fetching `https://<host>/.well-known/did.json` and extracting the
- * first verificationMethod with a publicKeyPem field.
+ * Select the verificationMethod entry a keyid resolves to (spec §9.10 step
+ * 3), validating that no two entries share an expanded id (step 2's
+ * duplicate check, run unconditionally over the whole document).
+ *
+ * @returns {{ method: object, methodId: string } | null}
+ * @throws {Error} "malformed-key-document" on a duplicate expanded id.
+ */
+function selectDidMethod(doc, didPart, fragment) {
+  const methods = Array.isArray(doc.verificationMethod) ? doc.verificationMethod : [];
+  const seen = new Set();
+  for (const m of methods) {
+    if (!m || typeof m !== "object") continue;
+    const id = expandMethodId(m.id, doc.id);
+    if (id === null) continue;
+    if (seen.has(id)) throw new Error("malformed-key-document");
+    seen.add(id);
+  }
+  if (fragment !== "") {
+    // Period or anchor kind: the single entry whose expanded id equals the
+    // whole keyid. No fallback of any kind.
+    const target = `${didPart}#${fragment}`;
+    for (const m of methods) {
+      if (!m || typeof m !== "object") continue;
+      if (expandMethodId(m.id, doc.id) === target) return { method: m, methodId: target };
+    }
+    return null;
+  }
+  // Bare kind: the first entry in array order whose fragment is not a
+  // period fragment. A verifier MUST NOT consult assertionMethod to choose.
+  for (const m of methods) {
+    if (!m || typeof m !== "object") continue;
+    const id = expandMethodId(m.id, doc.id);
+    if (id === null) continue;
+    if (parsePeriodFragment(methodFragmentOf(id)) === null) return { method: m, methodId: id };
+  }
+  return null;
+}
+
+/**
+ * Build a did:web resolver. Resolves keyids of the form
+ * `did:web:<host>[:<path>][#fragment]` by fetching
+ * `https://<host>/.well-known/did.json` (spec §9.10 verifier algorithm).
+ *
+ * A non-empty fragment matching the period grammar (`#p<N>`) or naming any
+ * other verification method selects that single entry by exact id, with no
+ * fallback. A bare keyid (no fragment) selects the first entry whose
+ * fragment is not a period fragment (the anchor). Revoked or expired
+ * entries are still returned, with their lifecycle fields, so the caller
+ * can report "key-revoked"; the resolver never falls through to another
+ * entry. The DID document and per-fragment "not found" outcomes are cached
+ * per spec §9.10 step 8.
  *
  * @param {object} [opts]
  * @param {typeof fetch} [opts.fetch]
  * @returns {KeyResolver}
  */
 export function didWebResolver(opts = {}) {
+  const nowFn = opts.now ?? Date.now;
+  const cache = createDocumentCache(nowFn);
+  const negativeCache = new Map();
+
+  async function loadDidDocument(url, options) {
+    const entry = await cache.load(url, opts.fetch, options);
+    if (!entry || entry.rawText !== null || !entry.doc || typeof entry.doc !== "object") return null;
+    return entry;
+  }
+
   return {
     async resolve(keyid) {
       if (!keyid?.startsWith("did:web:")) return null;
+      const { did: didPart, fragment } = splitDidFragment(keyid);
+      // Spec §9.10 step 1: a fragment containing '#', '/', or '?' fails.
+      if (/[#/?]/u.test(fragment)) return null;
+      const period = fragment === "" ? 0 : parsePeriodFragment(fragment) ?? 0;
+
       // A DID URL fragment identifies a resource in the DID document. It is
       // never part of the URL used to retrieve that document.
-      const rest = keyid.slice("did:web:".length).split(/[/?#]/u, 1)[0];
+      const rest = didPart.slice("did:web:".length);
       const [host, ...pathParts] = rest.split(":");
       const url = didWebDocumentURL(host, pathParts);
-      const doc = await fetchJson(url, opts.fetch);
-      if (!doc || doc._rawText) return null;
+
+      let entry = await loadDidDocument(url);
+      if (!entry) return null;
+      let doc = entry.doc;
       if (doc.deactivated === true) return null;
-      // Spec §8.1: an expired or revoked verification method is a DID
-      // resolution failure, so skip it rather than hand it back to the caller.
-      const vm = (doc.verificationMethod || []).find(
-        (m) => m.publicKeyPem && !isKeyRevoked(m),
-      );
-      if (!vm) return null;
+      if (typeof doc.id !== "string" || doc.id !== didPart) return null;
+
+      let selection = selectDidMethod(doc, didPart, fragment);
+      if (!selection) {
+        const negativeKey = `${url}\u0000${fragment}`;
+        const now = nowFn();
+        const negativeExpiresAt = negativeCache.get(negativeKey);
+        if (negativeExpiresAt !== undefined && negativeExpiresAt > now) return null;
+
+        // Spec §9.10 step 8: when the cached copy is older than 60 seconds,
+        // refetch once bypassing the cache before failing.
+        if (now - entry.fetchedAt >= DOCUMENT_CACHE_FLOOR_MS) {
+          const fresh = await loadDidDocument(url, { bypassCache: true });
+          if (fresh) {
+            doc = fresh.doc;
+            entry = fresh;
+            if (doc.deactivated === true) return null;
+            if (typeof doc.id !== "string" || doc.id !== didPart) return null;
+            selection = selectDidMethod(doc, didPart, fragment);
+          }
+        }
+        if (!selection) {
+          negativeCache.set(negativeKey, nowFn() + NEGATIVE_CACHE_TTL_MS);
+          return null;
+        }
+      }
+
+      const { method, methodId } = selection;
+      // Spec §9.10 step 4: publicKeyPem MUST be present, else malformed.
+      // There is no fall-through to another entry.
+      if (typeof method.publicKeyPem !== "string" || method.publicKeyPem === "") {
+        throw new Error("malformed-key-document");
+      }
       return {
         keyid,
-        publicKeyPem: vm.publicKeyPem,
-        algorithm: vm.algorithm || vmTypeToAlgo(vm.type) || "ed25519",
-        ...keyLifecycleFields(vm),
+        publicKeyPem: method.publicKeyPem,
+        algorithm: method.algorithm || vmTypeToAlgo(method.type) || "ed25519",
+        period,
+        identity: didPart,
+        methodId,
+        ...keyLifecycleFields(method),
       };
     },
   };
@@ -676,30 +862,82 @@ function vmTypeToAlgo(type) {
   return null;
 }
 
+function isAbsoluteHttpsUrl(value) {
+  if (typeof value !== "string") return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read the optional `period`/`identity` members of a URL-form key document
+ * (spec §9.10 "Period key documents"). Returns `{ period: 0, identity: kid }`
+ * when `period` is absent. When `requireSameOrigin` is true (direct-URL
+ * resolution, where `kid` is itself the fetch URL), `identity` must share
+ * `kid`'s origin; a trust-directory `kid` is opaque, so origin is not
+ * checked there (draft open issue: no identity-origin rule is defined yet
+ * for directory-hosted keys).
+ *
+ * @throws {Error} "malformed-key-document" on any violation.
+ */
+function resolvePeriodKeyDocumentFields(data, kid, { requireSameOrigin }) {
+  if (data.period === undefined) return { period: 0, identity: kid };
+  const period = data.period;
+  if (typeof period !== "number" || !Number.isInteger(period) || period < 1 || period > MAX_PERIOD) {
+    throw new Error("malformed-key-document");
+  }
+  if (!isAbsoluteHttpsUrl(data.identity)) throw new Error("malformed-key-document");
+  if (typeof data.kid !== "string" || data.kid !== kid) throw new Error("malformed-key-document");
+  if (data.expires !== undefined && data.expires !== null && data.expires !== "") {
+    throw new Error("malformed-key-document");
+  }
+  if (requireSameOrigin && new URL(data.identity).origin !== new URL(kid).origin) {
+    throw new Error("malformed-key-document");
+  }
+  return { period, identity: data.identity };
+}
+
 /**
  * Build a direct-URL resolver. Resolves any keyid that is itself an http(s) URL
  * by fetching it and parsing as JSON `{ publicKey | publicKeyPem, algorithm }`
- * or as raw PEM if the response is plain text.
+ * or as raw PEM if the response is plain text. When the document carries a
+ * `period` member, `identity` and `kid` are validated per spec §9.10.
+ * Documents are cached per spec §12.9/§13.4.
  *
  * @param {object} [opts]
  * @param {typeof fetch} [opts.fetch]
  * @returns {KeyResolver}
  */
 export function directUrlResolver(opts = {}) {
+  const cache = createDocumentCache(opts.now ?? Date.now);
   return {
     async resolve(keyid) {
       if (!/^https?:\/\//i.test(keyid)) return null;
-      const data = await fetchJson(keyid, opts.fetch);
-      if (!data) return null;
-      if (data._rawText) {
-        return { keyid, publicKeyPem: data._rawText.trim(), algorithm: "ed25519" };
+      const entry = await cache.load(keyid, opts.fetch);
+      if (!entry) return null;
+      if (entry.rawText !== null) {
+        return {
+          keyid,
+          publicKeyPem: entry.rawText.trim(),
+          algorithm: "ed25519",
+          period: 0,
+          identity: keyid,
+          methodId: keyid,
+        };
       }
+      const data = entry.doc;
       const pem = pemFromKeyDocument(data);
       if (!pem) return null;
+      const { period, identity } = resolvePeriodKeyDocumentFields(data, keyid, { requireSameOrigin: true });
       return {
         keyid,
         publicKeyPem: pem,
         algorithm: data.algorithm || "ed25519",
+        period,
+        identity,
+        methodId: keyid,
         ...keyLifecycleFields(data),
       };
     },
@@ -709,7 +947,10 @@ export function directUrlResolver(opts = {}) {
 /**
  * Build a trust-directory resolver. Tries each base URL in order; for each,
  * fetches `<base>/keys/<encoded-keyid>` and expects the same JSON shape as
- * directUrlResolver. Falls back across base URLs if any one fails.
+ * directUrlResolver. Falls back across base URLs if any one fails to
+ * respond; a "malformed-key-document" result propagates instead, since a
+ * directory document that fails validation is a real error, not an absent
+ * one. Documents are cached per spec §12.9/§13.4.
  *
  * @param {object} opts
  * @param {string[]} opts.baseUrls
@@ -718,28 +959,43 @@ export function directUrlResolver(opts = {}) {
  */
 export function trustDirectoryResolver(opts) {
   const baseUrls = opts?.baseUrls ?? [];
+  const cache = createDocumentCache(opts?.now ?? Date.now);
   return {
     async resolve(keyid) {
       if (!keyid) return null;
       for (const base of baseUrls) {
         const url = `${base.replace(/\/$/, "")}/keys/${encodeURIComponent(keyid)}`;
+        let entry;
         try {
-          const data = await fetchJson(url, opts.fetch);
-          if (!data) continue;
-          if (data._rawText) {
-            return { keyid, publicKeyPem: data._rawText.trim(), algorithm: "ed25519" };
-          }
-          const pem = pemFromKeyDocument(data);
-          if (!pem) continue;
+          entry = await cache.load(url, opts.fetch);
+        } catch (error) {
+          if (error?.message === "malformed-key-document") throw error;
+          continue; // try next base
+        }
+        if (!entry) continue;
+        if (entry.rawText !== null) {
           return {
             keyid,
-            publicKeyPem: pem,
-            algorithm: data.algorithm || "ed25519",
-            ...keyLifecycleFields(data),
+            publicKeyPem: entry.rawText.trim(),
+            algorithm: "ed25519",
+            period: 0,
+            identity: keyid,
+            methodId: keyid,
           };
-        } catch {
-          // try next base
         }
+        const data = entry.doc;
+        const pem = pemFromKeyDocument(data);
+        if (!pem) continue;
+        const { period, identity } = resolvePeriodKeyDocumentFields(data, keyid, { requireSameOrigin: false });
+        return {
+          keyid,
+          publicKeyPem: pem,
+          algorithm: data.algorithm || "ed25519",
+          period,
+          identity,
+          methodId: keyid,
+          ...keyLifecycleFields(data),
+        };
       }
       return null;
     },

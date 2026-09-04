@@ -7,6 +7,13 @@
  * Expected JSON: { "publicKey": "<PEM>", "algorithm": "ed25519" }
  *   (also accepts "publicKeyPem" as a synonym, matching DID conventions)
  *
+ * When a document carries a "period" member, "identity" and "kid" are
+ * validated per spec §9.10 (PeriodKeyDocument::resolveFields); the
+ * resulting InvalidArgumentException propagates immediately rather than
+ * falling through to the next base URL, since a directory document that
+ * fails validation is a real error, not an absent one. Documents are
+ * cached (see the note on DOCUMENT_CACHE_TTL below).
+ *
  * @package HTMLTrust\Canonicalization\Keys
  */
 
@@ -14,20 +21,39 @@ namespace HTMLTrust\Canonicalization\Keys;
 
 final class TrustDirectoryResolver implements KeyResolver
 {
+    // Spec §12.9/§13.4 sets a floor/ceiling on document caching. The
+    // injectable fetcher here returns only {body, contentType}, with no
+    // response headers, so Cache-Control's max-age cannot be read; every
+    // document is cached for the recommended ceiling (one hour).
+    private const DOCUMENT_CACHE_TTL = 3600;
+
     /** @var array<int, string> */
     private $baseUrls;
 
     /** @var callable(string): ?array{body: string, contentType: string} */
     private $fetcher;
 
+    /** @var callable(): int */
+    private $clock;
+
+    /** @var array<string, array{body: string, contentType: string, fetchedAt: int}> */
+    private $docCache = [];
+
     /**
      * @param array<int, string> $baseUrls Ordered list of trust-directory
      *                                     base URLs; each is tried in turn.
+     * @param callable|null $fetcher Optional injected HTTP fetcher; defaults
+     *                               to HttpFetcher::default().
+     * @param callable|null $clock   Optional injected clock (): int returning
+     *                               a unix timestamp; defaults to time().
      */
-    public function __construct(array $baseUrls, ?callable $fetcher = null)
+    public function __construct(array $baseUrls, ?callable $fetcher = null, ?callable $clock = null)
     {
         $this->baseUrls = array_values(array_filter($baseUrls, 'is_string'));
         $this->fetcher  = $fetcher ?? HttpFetcher::default();
+        $this->clock    = $clock ?? static function (): int {
+            return time();
+        };
     }
 
     public function supports(string $keyid): bool
@@ -55,7 +81,7 @@ final class TrustDirectoryResolver implements KeyResolver
 
         foreach ($this->baseUrls as $base) {
             $url = rtrim($base, '/') . '/keys/' . rawurlencode($keyid);
-            $response = HttpFetcher::validateResponse(($this->fetcher)($url));
+            $response = $this->loadDocument($url);
             if ($response === null) {
                 continue;
             }
@@ -77,9 +103,33 @@ final class TrustDirectoryResolver implements KeyResolver
                 ? $decoded['expires']
                 : null;
 
-            return new ResolvedKey($pem, $algorithm, $keyid, $revoked, $expires);
+            // PeriodKeyDocument::resolveFields throws on a malformed period
+            // key document; that MUST propagate, not fall through to the
+            // next base URL, so it is intentionally not caught here.
+            [$period, $identity] = PeriodKeyDocument::resolveFields($decoded, $keyid, false);
+
+            return new ResolvedKey($pem, $algorithm, $keyid, $revoked, $expires, $period, $identity, $keyid);
         }
 
         return null;
+    }
+
+    /** @return array{body: string, contentType: string}|null */
+    private function loadDocument(string $url): ?array
+    {
+        $now = ($this->clock)();
+        if (isset($this->docCache[$url])) {
+            $cached = $this->docCache[$url];
+            if ($now - $cached['fetchedAt'] < self::DOCUMENT_CACHE_TTL) {
+                return $cached;
+            }
+        }
+        $response = HttpFetcher::validateResponse(($this->fetcher)($url));
+        if ($response === null) {
+            return null;
+        }
+        $entry = ['body' => $response['body'], 'contentType' => $response['contentType'] ?? '', 'fetchedAt' => $now];
+        $this->docCache[$url] = $entry;
+        return $entry;
     }
 }

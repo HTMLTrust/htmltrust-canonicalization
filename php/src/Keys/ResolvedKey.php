@@ -24,12 +24,33 @@ final class ResolvedKey
     /** @var ?string RFC3339 expiry supplied by the key document. */
     public $expires;
 
+    /**
+     * @var int Period index (spec §9.10); 0 when the keyid has no period
+     *          fragment, or the resolved key document has no "period" member.
+     */
+    public $period;
+
+    /**
+     * @var string The DID with no fragment, the key document's "identity",
+     *             or the keyid itself for a non-period URL key (spec §9.10).
+     */
+    public $identity;
+
+    /**
+     * @var string The expanded id of the selected DID verification method,
+     *             or the keyid for a URL-form key (spec §9.10).
+     */
+    public $methodId;
+
     public function __construct(
         string $publicKeyPem,
         string $algorithm,
         string $keyid,
         bool $revoked = false,
-        ?string $expires = null
+        ?string $expires = null,
+        int $period = 0,
+        ?string $identity = null,
+        ?string $methodId = null
     )
     {
         $this->publicKeyPem = $publicKeyPem;
@@ -37,6 +58,9 @@ final class ResolvedKey
         $this->keyid        = $keyid;
         $this->revoked      = $revoked;
         $this->expires      = $expires;
+        $this->period       = $period;
+        $this->identity     = $identity ?? $keyid;
+        $this->methodId     = $methodId ?? $keyid;
     }
 
     /**
