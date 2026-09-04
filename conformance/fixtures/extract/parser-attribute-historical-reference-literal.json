@@ -1,0 +1,6 @@
+{
+  "name": "parser-attribute-historical-reference-literal",
+  "description": "A named reference followed by = inside an attribute value is the HTML attribute-value exception: no parse error, the ampersand is literal.",
+  "input": "<p><a href=\"https://example.org/?a=1&copy=2\">l</a></p>",
+  "expected": "@attr:a:href:https://example.org/?a=1&copy=2\nl"
+}

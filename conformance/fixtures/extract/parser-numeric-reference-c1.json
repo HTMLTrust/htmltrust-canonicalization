@@ -1,0 +1,6 @@
+{
+  "name": "parser-numeric-reference-c1",
+  "description": "A numeric reference into U+0080..U+009F is a control-character-reference parse error, outside the portable profile.",
+  "input": "<p>&#x80;</p>",
+  "error": "parser-profile-unsupported"
+}

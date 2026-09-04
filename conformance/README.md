@@ -36,6 +36,13 @@ Passing this suite is the one condition in the
 [trademark policy](https://www.htmltrust.org/trademark/) for using the
 HTMLTrust name.
 
+`independent/javascript/` is a worked example: a full canonicalizer built
+against this protocol alone, sharing no code with `rust/`, `ffi/`, or
+`javascript/`. See its `conformance-runner.mjs` for a complete Node
+implementation of the protocol, and its README.md for what an
+independent implementation is for (a differential-testing oracle) and
+what running one against this suite actually caught.
+
 ## Run the suite
 
 Docker builds Rust and the FFI library before starting the adapter services:

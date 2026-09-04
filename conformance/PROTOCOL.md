@@ -55,7 +55,7 @@ Writing both, or neither, is a protocol violation and fails the fixture.
 
 | Suite | Input | Output |
 |---|---|---|
-| `normalize` | Text | The text after the eight normalization phases |
+| `normalize` | Text | The text after the four `normalize_text` steps in draft section 4.4, applied with no trimming |
 | `extract` | An HTML fragment | Canonical text extracted from it, including signed attribute records |
 | `claims` | JSON claims | The canonical claims serialization |
 | `jcs` | JSON | RFC 8785 canonical JSON |

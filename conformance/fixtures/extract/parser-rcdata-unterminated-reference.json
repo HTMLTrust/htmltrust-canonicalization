@@ -1,0 +1,6 @@
+{
+  "name": "parser-rcdata-unterminated-reference",
+  "description": "RCDATA content (textarea, title) decodes character references, so an unterminated reference there is a parse error and outside the portable profile.",
+  "input": "<textarea>a &amp b</textarea>",
+  "error": "parser-profile-unsupported"
+}

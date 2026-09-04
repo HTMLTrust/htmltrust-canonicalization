@@ -1,0 +1,6 @@
+{
+  "name": "rcdata-text-included",
+  "description": "textarea is an included element; its decoded RCDATA text contributes bytes and tag-like content inside it is literal text.",
+  "input": "<p>a</p><textarea>x &amp; <b>y</b></textarea>",
+  "expected": "a\nx & <b>y</b>"
+}

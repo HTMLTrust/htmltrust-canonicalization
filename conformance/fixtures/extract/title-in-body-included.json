@@ -1,0 +1,6 @@
+{
+  "name": "title-in-body-included",
+  "description": "title is not an excluded element; in a signed fragment its RCDATA text is signed content in document order, including when it is the first node.",
+  "input": "<title>Hello</title><p>x</p>",
+  "expected": "Hellox"
+}

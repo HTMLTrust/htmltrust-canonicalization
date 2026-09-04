@@ -1,0 +1,6 @@
+{
+  "name": "parser-numeric-reference-null",
+  "description": "A numeric character reference to U+0000 is a parse error; the portable profile rejects it rather than emitting U+FFFD.",
+  "input": "<p>a&#0;b</p>",
+  "error": "parser-profile-unsupported"
+}

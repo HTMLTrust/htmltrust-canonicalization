@@ -1,0 +1,6 @@
+{
+  "name": "attr-alt-trimmed",
+  "description": "alt and aria-label are normalize_field (trimmed), not normalize_text: leading/trailing space in the source attribute value does not appear in the attribute record.",
+  "input": "<p><img alt=\" x \"></p>",
+  "expected": "@attr:img:alt:x"
+}

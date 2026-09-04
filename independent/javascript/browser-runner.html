@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HTMLTrust independent-JS conformance (browser)</title>
+<style>
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #111; }
+  h1 { font-size: 1.1rem; }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  td, th { border: 1px solid #ccc; padding: 0.25rem 0.75rem; text-align: left; }
+  #status[data-state="done"] { font-weight: bold; }
+  #status[data-state="done"][data-ok="true"] { color: #0a7a2f; }
+  #status[data-state="done"][data-ok="false"] { color: #b3261e; }
+  pre { white-space: pre-wrap; background: #f5f5f5; padding: 0.75rem; }
+</style>
+</head>
+<body>
+<h1>HTMLTrust independent-JS conformance -- browser (DOMParser) runner</h1>
+<p>
+  This page runs the same conformance/PROTOCOL.md fixtures as
+  conformance-runner.mjs, but through the browser's own HTML parser
+  (a detached &lt;template&gt; element's <code>innerHTML</code> setter, fragment
+  context; see adapters/browser-domparser.js) instead of parse5, exercising
+  canonicalize.js's engine-agnostic algorithm on a second, independent HTML
+  parser. It fetches fixtures from <code>conformance/fixtures.sha256</code>
+  and <code>conformance/fixtures/…</code> relative to this file, so it must
+  be served, not opened as a <code>file://</code> URL: from the repository
+  root run <code>python3 -m http.server 8000</code> and open
+  <code>http://localhost:8000/independent/javascript/browser-runner.html</code>.
+  Every fixture body is hashed with <code>crypto.subtle.digest</code> and
+  checked against <code>fixtures.sha256</code> before any of them run, the
+  same integrity guarantee <code>--verify-fixtures</code> gives the Node
+  runner; a mismatch aborts the run with an error rather than a silent
+  pass/fail count.
+</p>
+<div id="status" data-state="loading">Loading fixtures…</div>
+<table id="summary"></table>
+<h2>Failures</h2>
+<pre id="failures">(none yet)</pre>
+<script type="module">
+import {
+  extract,
+  normalizeChecked,
+  canonicalizeClaims,
+  canonicalizeJCS,
+  HTMLTrustError,
+} from './canonicalize.js';
+import { parseFragment } from './adapters/browser-domparser.js';
+
+const statusEl = document.getElementById('status');
+const summaryEl = document.getElementById('summary');
+const failuresEl = document.getElementById('failures');
+
+function applyRepeat(suite, input, repeat) {
+  if (!repeat || repeat === 1) return input;
+  if (suite === 'claims') {
+    const out = { ...input };
+    for (const k of Object.keys(out)) {
+      if (typeof out[k] === 'string') out[k] = out[k].repeat(repeat);
+    }
+    return out;
+  }
+  return input.repeat(repeat);
+}
+
+function run(suite, input, baseURL) {
+  switch (suite) {
+    case 'normalize': return normalizeChecked(input);
+    case 'extract': return extract(input, { baseURL, parseFragment });
+    case 'claims': return canonicalizeClaims(input);
+    case 'jcs': return canonicalizeJCS(input);
+    default: throw new Error(`unknown suite ${suite}`);
+  }
+}
+
+async function loadManifest() {
+  const shaText = await (await fetch('../../conformance/fixtures.sha256')).text();
+  const entries = [];
+  for (const line of shaText.split('\n')) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const m = t.match(/^([0-9a-f]+)\s+(fixtures\/([a-z]+)\/([^/]+)\.json)$/);
+    if (m) entries.push({ hash: m[1], relPath: m[2], suite: m[3], name: m[4] });
+  }
+  return entries;
+}
+
+function toHex(buffer) {
+  return Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Fetch every fixture once, as raw bytes, and hash those bytes with
+ * SubtleCrypto -- the same sha256(path.read_bytes()) check
+ * run-external.py's --verify-fixtures does for the Node runner. Without
+ * this, a browser PASS would say nothing about whether the fixtures
+ * actually served over HTTP are the committed ones.
+ */
+async function fetchAndVerify(manifest) {
+  const bodies = new Map(); // relPath -> ArrayBuffer
+  const mismatches = [];
+  for (const fx of manifest) {
+    const buf = await (await fetch(`../../conformance/${fx.relPath}`)).arrayBuffer();
+    const digest = toHex(await crypto.subtle.digest('SHA-256', buf));
+    if (digest !== fx.hash) {
+      mismatches.push(`${fx.relPath}: expected sha256 ${fx.hash}, got ${digest}`);
+    }
+    bodies.set(fx.relPath, buf);
+  }
+  return { bodies, mismatches };
+}
+
+async function main() {
+  const manifest = await loadManifest();
+  const { bodies, mismatches } = await fetchAndVerify(manifest);
+  if (mismatches.length > 0) {
+    throw new Error(`fixture integrity check failed:\n${mismatches.join('\n')}`);
+  }
+
+  const decoder = new TextDecoder('utf-8');
+  const counts = {}; // suite -> {pass,total}
+  const failures = [];
+
+  for (const fx of manifest) {
+    const data = JSON.parse(decoder.decode(bodies.get(fx.relPath)));
+    counts[fx.suite] ??= { pass: 0, total: 0 };
+    counts[fx.suite].total++;
+
+    const input = applyRepeat(fx.suite, data.input, data.repeat);
+    let got, err;
+    try {
+      got = run(fx.suite, input, data.baseURL);
+    } catch (e) {
+      err = e;
+    }
+
+    let ok;
+    if (data.error !== undefined) {
+      ok = err instanceof HTMLTrustError && err.code === data.error;
+    } else {
+      ok = err === undefined && got === data.expected;
+    }
+
+    if (ok) {
+      counts[fx.suite].pass++;
+    } else {
+      const want = data.error !== undefined ? `error ${data.error}` : JSON.stringify(data.expected);
+      const gotStr = err ? `${err instanceof HTMLTrustError ? err.code : 'THROW: ' + err.message}` : JSON.stringify(got);
+      failures.push(`${fx.suite}/${fx.name}\n  want ${want}\n  got  ${gotStr}`);
+    }
+  }
+
+  const suites = Object.keys(counts).sort();
+  let totalPass = 0;
+  let totalCount = 0;
+  const rows = ['<tr><th>Suite</th><th>Passed</th></tr>'];
+  for (const s of suites) {
+    const c = counts[s];
+    totalPass += c.pass;
+    totalCount += c.total;
+    rows.push(`<tr><td>${s}</td><td>${c.pass} / ${c.total}</td></tr>`);
+  }
+  rows.push(`<tr><th>Total</th><th>${totalPass} / ${totalCount}</th></tr>`);
+  summaryEl.innerHTML = rows.join('\n');
+
+  failuresEl.textContent = failures.length ? failures.join('\n\n') : '(none)';
+
+  const allPass = totalPass === totalCount;
+  statusEl.textContent = `DONE: ${totalPass} / ${totalCount} passed`;
+  statusEl.dataset.state = 'done';
+  statusEl.dataset.ok = String(allPass);
+  document.title = `${allPass ? 'PASS' : 'FAIL'} ${totalPass}/${totalCount} -- browser conformance`;
+}
+
+main().catch((e) => {
+  statusEl.textContent = `RUNNER ERROR: ${e.stack || e}`;
+  statusEl.dataset.state = 'done';
+  statusEl.dataset.ok = 'false';
+});
+</script>
+</body>
+</html>
