@@ -1113,17 +1113,17 @@ function deriveEd25519PeriodKey(masterBytes, identity, period) {
 }
 
 await check('HKDF+Ed25519 period-key derivation reproduces period-keys-v1.json', async () => {
-  const master = Buffer.from(periodKeysVector.master_hex, 'hex');
+  const master = Buffer.from(periodKeysVector.masterHex, 'hex');
   for (const entry of periodKeysVector.periods) {
     const { seed, privateKey, publicKey } = deriveEd25519PeriodKey(master, periodKeysVector.identity, entry.period);
-    assertEq(seed.toString('hex'), entry.seed_hex, `period ${entry.period} seed`);
+    assertEq(seed.toString('hex'), entry.seedHex, `period ${entry.period} seed`);
     const spkiDer = publicKey.export({ type: 'spki', format: 'der' });
-    assertEq(encodeBase64Unpadded(spkiDer), entry.publicKey_spki_b64, `period ${entry.period} public key`);
-    if (entry.signature_b64) {
-      const signature = nodeCrypto.sign(null, Buffer.from(entry.signature_test_message, 'utf8'), privateKey);
-      assertEq(encodeBase64Unpadded(signature), entry.signature_b64, `period ${entry.period} signature`);
+    assertEq(encodeBase64Unpadded(spkiDer), entry.publicKeySpkiBase64, `period ${entry.period} public key`);
+    if (entry.signatureBase64) {
+      const signature = nodeCrypto.sign(null, Buffer.from(entry.signatureTestMessage, 'utf8'), privateKey);
+      assertEq(encodeBase64Unpadded(signature), entry.signatureBase64, `period ${entry.period} signature`);
       assert(
-        await verifySignature(entry.signature_test_message, entry.signature_b64, entry.publicKeyPem, 'ed25519'),
+        await verifySignature(entry.signatureTestMessage, entry.signatureBase64, entry.publicKeyPem, 'ed25519'),
         `period ${entry.period} signature must verify under the derived public key`,
       );
     }

@@ -281,16 +281,16 @@ func (s sequenceTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 // ---- HKDF + Ed25519 period-key derivation (draft §9.10, Appendix A) ----
 
 type periodKeysVector struct {
-	MasterHex string `json:"master_hex"`
+	MasterHex string `json:"masterHex"`
 	Identity  string `json:"identity"`
 	Salt      string `json:"salt"`
 	Periods   []struct {
 		Period               int    `json:"period"`
-		SeedHex              string `json:"seed_hex"`
-		PublicKeySpkiB64     string `json:"publicKey_spki_b64"`
+		SeedHex              string `json:"seedHex"`
+		PublicKeySpkiB64     string `json:"publicKeySpkiBase64"`
 		PublicKeyPem         string `json:"publicKeyPem"`
-		SignatureTestMessage string `json:"signature_test_message"`
-		SignatureB64         string `json:"signature_b64"`
+		SignatureTestMessage string `json:"signatureTestMessage"`
+		SignatureB64         string `json:"signatureBase64"`
 	} `json:"periods"`
 }
 

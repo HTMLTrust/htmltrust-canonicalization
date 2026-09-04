@@ -36,32 +36,32 @@ class PeriodKeyDerivationTest extends TestCase
         $raw = file_get_contents(self::KEYS_VECTOR_PATH);
         $this->assertNotFalse($raw);
         $vector = json_decode($raw, true);
-        $master = hex2bin($vector['master_hex']);
+        $master = hex2bin($vector['masterHex']);
         $this->assertNotFalse($master);
 
         foreach ($vector['periods'] as $entry) {
             [$seed, $keypair] = self::derivePeriodKey($master, $vector['identity'], $entry['period']);
-            $this->assertSame($entry['seed_hex'], bin2hex($seed), 'period ' . $entry['period'] . ' seed');
+            $this->assertSame($entry['seedHex'], bin2hex($seed), 'period ' . $entry['period'] . ' seed');
 
             $publicKey = sodium_crypto_sign_publickey($keypair);
             $spkiPem = Signature::ed25519RawToPem($publicKey);
             $spkiDer = self::pemToDer($spkiPem);
             $this->assertSame(
-                $entry['publicKey_spki_b64'],
+                $entry['publicKeySpkiBase64'],
                 self::base64Unpadded($spkiDer),
                 'period ' . $entry['period'] . ' public key'
             );
 
-            if (!empty($entry['signature_b64'])) {
+            if (!empty($entry['signatureBase64'])) {
                 $secretKey = sodium_crypto_sign_secretkey($keypair);
-                $signature = sodium_crypto_sign_detached($entry['signature_test_message'], $secretKey);
+                $signature = sodium_crypto_sign_detached($entry['signatureTestMessage'], $secretKey);
                 $this->assertSame(
-                    $entry['signature_b64'],
+                    $entry['signatureBase64'],
                     self::base64Unpadded($signature),
                     'period ' . $entry['period'] . ' signature'
                 );
                 $this->assertTrue(
-                    Signature::verifySignature($entry['signature_test_message'], $entry['signature_b64'], $entry['publicKeyPem'], 'ed25519'),
+                    Signature::verifySignature($entry['signatureTestMessage'], $entry['signatureBase64'], $entry['publicKeyPem'], 'ed25519'),
                     'period ' . $entry['period'] . ' signature must verify under the derived public key'
                 );
             }
