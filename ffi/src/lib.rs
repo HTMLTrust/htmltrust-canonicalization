@@ -1,20 +1,68 @@
 //! FFI / WebAssembly bindings for the HTMLTrust canonicalization core.
 //!
 //! This crate makes the Rust implementation available to native and WebAssembly
-//! consumers. The in-tree JavaScript, Go, PHP, and Python bindings remain
-//! independent implementations and are checked against shared fixtures.
+//! consumers. The stable v1 boundary covers normalization, HTML extraction,
+//! direct claim extraction, claims serialization, and strict JSON
+//! canonicalization.
 //!
 //! Native builds expose a C ABI for consumers such as Python `ctypes`, Go
 //! `cgo`, and PHP FFI. `wasm32` builds expose `wasm-bindgen` functions for
 //! JavaScript runtimes.
+
+use std::collections::BTreeMap;
+
+/// Encode a Rust string as one JSON string value without adding a serializer
+/// dependency to the ABI crate.
+fn json_escape(value: &str, output: &mut String) {
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0C}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            character if (character as u32) < 0x20 => {
+                use std::fmt::Write;
+                write!(output, "\\u{:04x}", character as u32).expect("String cannot fail");
+            }
+            character => output.push(character),
+        }
+    }
+}
+
+/// Return extracted claims as a UTF-8 JSON object. C has no portable map type,
+/// so both C and WebAssembly use this string representation at the boundary.
+fn extract_claims_json(html: &str) -> Result<String, String> {
+    let claims: BTreeMap<String, String> =
+        htmltrust_canonicalization::extract_claims_from_signed_section(html)?;
+    let mut output = String::from("{");
+    for (index, (name, value)) in claims.iter().enumerate() {
+        if index != 0 {
+            output.push(',');
+        }
+        output.push('"');
+        json_escape(name, &mut output);
+        output.push_str("\":\"");
+        json_escape(value, &mut output);
+        output.push('"');
+    }
+    output.push('}');
+    Ok(output)
+}
 
 // ---------------------------------------------------------------------------
 // Native C ABI
 // ---------------------------------------------------------------------------
 #[cfg(not(target_arch = "wasm32"))]
 mod capi {
+    use super::extract_claims_json;
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    const CORE_INTERNAL_ERROR: &[u8] = b"core-internal-error";
 
     fn to_c(s: String) -> *mut c_char {
         // Canonical text never contains an interior NUL; fall back to empty on
@@ -32,6 +80,48 @@ mod capi {
             *out_len = 0;
         }
         !out.is_null() && !out_len.is_null()
+    }
+
+    unsafe fn write_bytes(out: *mut *mut u8, out_len: *mut usize, bytes: Vec<u8>) -> i32 {
+        let bytes = bytes.into_boxed_slice();
+        *out_len = bytes.len();
+        *out = Box::into_raw(bytes) as *mut u8;
+        0
+    }
+
+    unsafe fn write_result(
+        out: *mut *mut u8,
+        out_len: *mut usize,
+        result: Result<String, String>,
+    ) -> i32 {
+        match result {
+            Ok(value) => write_bytes(out, out_len, value.into_bytes()),
+            Err(error) => {
+                let bytes = error.into_bytes().into_boxed_slice();
+                *out_len = bytes.len();
+                *out = Box::into_raw(bytes) as *mut u8;
+                1
+            }
+        }
+    }
+
+    unsafe fn catch_result<F>(out: *mut *mut u8, out_len: *mut usize, operation: F) -> i32
+    where
+        F: FnOnce() -> Result<String, String>,
+    {
+        match catch_unwind(AssertUnwindSafe(operation)) {
+            Ok(result) => write_result(out, out_len, result),
+            Err(_) => {
+                let _ = write_bytes(out, out_len, CORE_INTERNAL_ERROR.to_vec());
+                1
+            }
+        }
+    }
+
+    /// ABI version for the versioned, length-based interface.
+    #[no_mangle]
+    pub extern "C" fn htmltrust_abi_version_v1() -> u32 {
+        1
     }
 
     /// Extract canonical text from `html`, resolving relative signed-attribute
@@ -110,7 +200,8 @@ mod capi {
     /// newly allocated UTF-8 buffer; on failure they contain the UTF-8 error
     /// code. Free either result with `htmltrust_bytes_free`.
     ///
-    /// A NULL base pointer with length zero means no base URL. Status 2 means
+    /// A zero-length base URL, with either a NULL or non-NULL pointer, means
+    /// no base URL. Status 2 means
     /// an invalid pointer (`out`/`out_len` is NULL, or a non-zero length is
     /// paired with a NULL input pointer); such calls do not allocate a result.
     #[no_mangle]
@@ -161,45 +252,33 @@ mod capi {
         if (html.is_null() && html_len != 0) || (base_url.is_null() && base_url_len != 0) {
             return 2;
         }
-        let html =
-            std::slice::from_raw_parts(if html.is_null() { b"".as_ptr() } else { html }, html_len);
-        let base = if base_url.is_null() && base_url_len == 0 {
-            None
-        } else {
-            Some(std::slice::from_raw_parts(base_url, base_url_len))
-        };
-        let result = match std::str::from_utf8(html) {
-            Ok(html) => {
-                let base = match base {
-                    Some(bytes) => match std::str::from_utf8(bytes) {
-                        Ok(base) => Some(base),
-                        Err(_) => {
-                            let bytes = b"parser-profile-unsupported".to_vec().into_boxed_slice();
-                            *out_len = bytes.len();
-                            *out = Box::into_raw(bytes) as *mut u8;
-                            return 1;
-                        }
-                    },
-                    None => None,
-                };
-                htmltrust_canonicalization::try_extract_canonical_text_with_options(
-                    html,
-                    htmltrust_canonicalization::ExtractOptions {
-                        preserve_whitespace,
-                        base_url: base,
-                    },
-                )
-            }
-            Err(_) => Err("parser-profile-unsupported".to_string()),
-        };
-        let (status, bytes) = match result {
-            Ok(text) => (0, text.into_bytes()),
-            Err(error) => (1, error.into_bytes()),
-        };
-        let bytes = bytes.into_boxed_slice();
-        *out_len = bytes.len();
-        *out = Box::into_raw(bytes) as *mut u8;
-        status
+        catch_result(out, out_len, || {
+            let html = std::slice::from_raw_parts(
+                if html.is_null() { b"".as_ptr() } else { html },
+                html_len,
+            );
+            let base = if base_url.is_null() && base_url_len == 0 {
+                None
+            } else {
+                Some(std::slice::from_raw_parts(base_url, base_url_len))
+            };
+            let html =
+                std::str::from_utf8(html).map_err(|_| "parser-profile-unsupported".to_string())?;
+            let base = match base {
+                Some(bytes) => Some(
+                    std::str::from_utf8(bytes)
+                        .map_err(|_| "parser-profile-unsupported".to_string())?,
+                ),
+                None => None,
+            };
+            htmltrust_canonicalization::try_extract_canonical_text_with_options(
+                html,
+                htmltrust_canonicalization::ExtractOptions {
+                    preserve_whitespace,
+                    base_url: base,
+                },
+            )
+        })
     }
 
     /// Spelling-compatible alias for callers that put the version suffix
@@ -279,17 +358,13 @@ mod capi {
         if text.is_null() && text_len != 0 {
             return 2;
         }
-        let text =
-            std::slice::from_raw_parts(if text.is_null() { b"".as_ptr() } else { text }, text_len);
-        let result = htmltrust_canonicalization::try_normalize_text_v1(text, preserve_whitespace);
-        let (status, bytes) = match result {
-            Ok(value) => (0, value.into_bytes()),
-            Err(error) => (1, error.into_bytes()),
-        };
-        let bytes = bytes.into_boxed_slice();
-        *out_len = bytes.len();
-        *out = Box::into_raw(bytes) as *mut u8;
-        status
+        catch_result(out, out_len, || {
+            let text = std::slice::from_raw_parts(
+                if text.is_null() { b"".as_ptr() } else { text },
+                text_len,
+            );
+            htmltrust_canonicalization::try_normalize_text_v1(text, preserve_whitespace)
+        })
     }
 
     #[no_mangle]
@@ -330,17 +405,13 @@ mod capi {
         if json.is_null() && json_len != 0 {
             return 2;
         }
-        let json =
-            std::slice::from_raw_parts(if json.is_null() { b"".as_ptr() } else { json }, json_len);
-        let result = htmltrust_canonicalization::canonicalize_json_document(json);
-        let (status, bytes) = match result {
-            Ok(text) => (0, text.into_bytes()),
-            Err(error) => (1, error.into_bytes()),
-        };
-        let bytes = bytes.into_boxed_slice();
-        *out_len = bytes.len();
-        *out = Box::into_raw(bytes) as *mut u8;
-        status
+        catch_result(out, out_len, || {
+            let json = std::slice::from_raw_parts(
+                if json.is_null() { b"".as_ptr() } else { json },
+                json_len,
+            );
+            htmltrust_canonicalization::canonicalize_json_document(json)
+        })
     }
 
     #[no_mangle]
@@ -351,6 +422,64 @@ mod capi {
         out_len: *mut usize,
     ) -> i32 {
         htmltrust_canonicalize_json_document_v1(json, json_len, out, out_len)
+    }
+
+    /// Canonicalize a UTF-8 JSON object whose values are claim strings. Status
+    /// and output ownership match the other length-based v1 APIs. Duplicate
+    /// members, non-string values, malformed JSON, and non-object roots return
+    /// the allocated `claim-malformed` error code with status 1.
+    #[no_mangle]
+    pub unsafe extern "C" fn htmltrust_canonicalize_claims_v1(
+        claims: *const u8,
+        claims_len: usize,
+        out: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        if !initialize_byte_outputs(out, out_len) {
+            return 2;
+        }
+        if claims.is_null() && claims_len != 0 {
+            return 2;
+        }
+        catch_result(out, out_len, || {
+            let claims = std::slice::from_raw_parts(
+                if claims.is_null() {
+                    b"".as_ptr()
+                } else {
+                    claims
+                },
+                claims_len,
+            );
+            htmltrust_canonicalization::canonicalize_claims_document(claims)
+        })
+    }
+
+    /// Extract direct-child claim metadata from the first `signed-section`.
+    /// Without a wrapper, the input is treated as section inner HTML. The
+    /// successful result is a UTF-8 JSON object whose keys and values are the
+    /// normalized claims. Status and ownership match the other v1 APIs.
+    #[no_mangle]
+    pub unsafe extern "C" fn htmltrust_extract_claims_from_signed_section_v1(
+        html: *const u8,
+        html_len: usize,
+        out: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        if !initialize_byte_outputs(out, out_len) {
+            return 2;
+        }
+        if html.is_null() && html_len != 0 {
+            return 2;
+        }
+        catch_result(out, out_len, || {
+            let html = std::slice::from_raw_parts(
+                if html.is_null() { b"".as_ptr() } else { html },
+                html_len,
+            );
+            let html =
+                std::str::from_utf8(html).map_err(|_| "parser-profile-unsupported".to_string())?;
+            extract_claims_json(html)
+        })
     }
 
     /// Free a string previously returned via `htmltrust_extract_canonical_text`.
@@ -371,7 +500,7 @@ mod capi {
         #[test]
         fn invalid_utf8_c_string_clears_stale_output() {
             let input = [0xff_u8, 0];
-            let mut out = 1_usize as *mut c_char;
+            let mut out = std::ptr::NonNull::<c_char>::dangling().as_ptr();
             let status = unsafe {
                 htmltrust_extract_canonical_text(
                     input.as_ptr() as *const c_char,
@@ -385,7 +514,7 @@ mod capi {
 
         #[test]
         fn invalid_pointer_clears_length_api_outputs() {
-            let mut out = 1_usize as *mut u8;
+            let mut out = std::ptr::NonNull::<u8>::dangling().as_ptr();
             let mut out_len = 77;
             let status = unsafe {
                 htmltrust_extract_canonical_text_v1(
@@ -401,7 +530,7 @@ mod capi {
             assert!(out.is_null());
             assert_eq!(out_len, 0);
 
-            let mut out = 1_usize as *mut u8;
+            let mut out = std::ptr::NonNull::<u8>::dangling().as_ptr();
             let status = unsafe {
                 htmltrust_normalize_text_v1(b"x".as_ptr(), 1, false, &mut out, std::ptr::null_mut())
             };
@@ -430,6 +559,25 @@ mod capi {
             assert_eq!(bytes, b"a b");
             unsafe { htmltrust_bytes_free(out, out_len) };
 
+            let empty_base = [0_u8];
+            out = std::ptr::null_mut();
+            out_len = 0;
+            let status = unsafe {
+                htmltrust_extract_canonical_text_options_v1(
+                    html.as_ptr(),
+                    html.len(),
+                    empty_base.as_ptr(),
+                    0,
+                    false,
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 0);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, b"a b");
+            unsafe { htmltrust_bytes_free(out, out_len) };
+
             let input = b"a\t\tb";
             out = std::ptr::null_mut();
             out_len = 0;
@@ -447,6 +595,155 @@ mod capi {
             assert_eq!(bytes, b"a b");
             unsafe { htmltrust_bytes_free(out, out_len) };
         }
+
+        #[test]
+        fn versioned_api_reports_abi_and_claims_result() {
+            assert_eq!(htmltrust_abi_version_v1(), 1);
+
+            let input = "{\"b\":\"two\",\"a\":\"“one”\"}".as_bytes();
+            let mut out = std::ptr::null_mut();
+            let mut out_len = 0;
+            let status = unsafe {
+                htmltrust_canonicalize_claims_v1(
+                    input.as_ptr(),
+                    input.len(),
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 0);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, b"a:\"one\"\nb:two\n");
+            unsafe { htmltrust_bytes_free(out, out_len) };
+        }
+
+        #[test]
+        fn claims_and_json_apis_return_allocated_errors() {
+            let mut out = std::ptr::NonNull::<u8>::dangling().as_ptr();
+            let mut out_len = 77;
+            let claims = br#"{"claim":42}"#;
+            let status = unsafe {
+                htmltrust_canonicalize_claims_v1(
+                    claims.as_ptr(),
+                    claims.len(),
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 1);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, b"claim-malformed");
+            unsafe { htmltrust_bytes_free(out, out_len) };
+
+            out = std::ptr::null_mut();
+            out_len = 0;
+            let json = br#"{"value":-0}"#;
+            let status = unsafe {
+                htmltrust_canonicalize_json_document_v1(
+                    json.as_ptr(),
+                    json.len(),
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 1);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, b"jcs-number");
+            unsafe { htmltrust_bytes_free(out, out_len) };
+
+            out = std::ptr::null_mut();
+            out_len = 0;
+            let json = b"{";
+            let status = unsafe {
+                htmltrust_canonicalize_json_document_v1(
+                    json.as_ptr(),
+                    json.len(),
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 1);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, b"jcs-invalid-json");
+            unsafe { htmltrust_bytes_free(out, out_len) };
+        }
+
+        #[test]
+        fn extracts_direct_claims_as_json() {
+            let input = r#"<signed-section><meta name="z" content="2"><meta name="a" content="“one”"><div><meta name="nested" content="ignored"></div></signed-section>"#.as_bytes();
+            let mut out = std::ptr::null_mut();
+            let mut out_len = 0;
+            let status = unsafe {
+                htmltrust_extract_claims_from_signed_section_v1(
+                    input.as_ptr(),
+                    input.len(),
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 0);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, br#"{"a":"\"one\"","z":"2"}"#);
+            unsafe { htmltrust_bytes_free(out, out_len) };
+        }
+
+        #[test]
+        fn claim_extraction_preserves_abi_error_and_output_rules() {
+            let mut out = std::ptr::NonNull::<u8>::dangling().as_ptr();
+            let mut out_len = 19;
+            let status = unsafe {
+                htmltrust_extract_claims_from_signed_section_v1(
+                    std::ptr::null(),
+                    1,
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 2);
+            assert!(out.is_null());
+            assert_eq!(out_len, 0);
+
+            let input = br#"<signed-section><meta name="a"></signed-section>"#;
+            let status = unsafe {
+                htmltrust_extract_claims_from_signed_section_v1(
+                    input.as_ptr(),
+                    input.len(),
+                    &mut out,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, 1);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, b"claim-malformed");
+            unsafe { htmltrust_bytes_free(out, out_len) };
+        }
+
+        #[test]
+        fn panic_in_versioned_operation_becomes_core_error() {
+            let mut out = std::ptr::null_mut();
+            let mut out_len = 0;
+            let status = unsafe {
+                catch_result(&mut out, &mut out_len, || -> Result<String, String> {
+                    panic!("test panic")
+                })
+            };
+            assert_eq!(status, 1);
+            let bytes = unsafe { std::slice::from_raw_parts(out, out_len) };
+            assert_eq!(bytes, CORE_INTERNAL_ERROR);
+            unsafe { htmltrust_bytes_free(out, out_len) };
+        }
+
+        #[test]
+        fn claims_api_clears_outputs_on_invalid_pointer() {
+            let mut out = std::ptr::NonNull::<u8>::dangling().as_ptr();
+            let mut out_len = 77;
+            let status = unsafe {
+                htmltrust_canonicalize_claims_v1(std::ptr::null(), 1, &mut out, &mut out_len)
+            };
+            assert_eq!(status, 2);
+            assert!(out.is_null());
+            assert_eq!(out_len, 0);
+        }
     }
 }
 
@@ -455,14 +752,52 @@ mod capi {
 // ---------------------------------------------------------------------------
 #[cfg(target_arch = "wasm32")]
 mod wasm {
+    use super::extract_claims_json;
     use wasm_bindgen::prelude::*;
+
+    fn error(code: String) -> JsError {
+        JsError::new(&code)
+    }
+
+    /// ABI version for the versioned WebAssembly interface.
+    #[wasm_bindgen(js_name = abiVersion)]
+    pub fn abi_version() -> u32 {
+        1
+    }
+
+    /// Normalize text using the v1 profile. Legacy whitespace preservation is
+    /// deliberately not exposed by this profile entry point.
+    #[wasm_bindgen(js_name = normalizeText)]
+    pub fn normalize_text(text: &str) -> Result<String, JsError> {
+        htmltrust_canonicalization::try_normalize_text(text, false).map_err(error)
+    }
+
+    /// Canonicalize a JSON object containing string claim values.
+    #[wasm_bindgen(js_name = canonicalizeClaims)]
+    pub fn canonicalize_claims(document: &str) -> Result<String, JsError> {
+        htmltrust_canonicalization::canonicalize_claims_document(document.as_bytes()).map_err(error)
+    }
+
+    /// Extract direct-child claim metadata from the first `signed-section`.
+    /// Without a wrapper, the input is treated as section inner HTML. The
+    /// result is a JSON object with normalized claim names and values.
+    #[wasm_bindgen(js_name = extractClaimsFromSignedSection)]
+    pub fn extract_claims_from_signed_section(html: &str) -> Result<String, JsError> {
+        extract_claims_json(html).map_err(error)
+    }
+
+    /// Canonicalize one raw JSON document according to RFC 8785 (JCS).
+    #[wasm_bindgen(js_name = canonicalizeJsonDocument)]
+    pub fn canonicalize_json_document(document: &str) -> Result<String, JsError> {
+        htmltrust_canonicalization::canonicalize_json_document(document.as_bytes()).map_err(error)
+    }
 
     /// Extract canonical text. `base` may be omitted (undefined/null). Throws a
     /// JS error carrying the canonicalization failure code on failure.
     #[wasm_bindgen(js_name = extractCanonicalText)]
     pub fn extract_canonical_text(html: &str, base: Option<String>) -> Result<String, JsError> {
         htmltrust_canonicalization::try_extract_canonical_text_with_base_url(html, base.as_deref())
-            .map_err(|e| JsError::new(&e))
+            .map_err(error)
     }
 
     /// Option-aware extraction. `base` may be omitted (undefined/null).
@@ -479,6 +814,6 @@ mod wasm {
                 base_url: base.as_deref(),
             },
         )
-        .map_err(|e| JsError::new(&e))
+        .map_err(error)
     }
 }

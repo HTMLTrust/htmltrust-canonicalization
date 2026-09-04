@@ -14,7 +14,7 @@ export interface NormalizeOptions {
  *
  * @param text - Raw text content
  * @param options - Normalization options
- * @returns Normalized text
+ * @returns Normalized text from the initialized Rust/WASM core
  */
 export function normalizeText(text: string, options?: NormalizeOptions): string;
 
@@ -29,7 +29,7 @@ export function normalizeText(text: string, options?: NormalizeOptions): string;
  *
  * @param html - HTML fragment to canonicalize
  * @param options - Options passed through to normalizeText
- * @returns Canonical text, ready to be hashed
+ * @returns Canonical text from the initialized Rust/WASM core
  */
 export function extractCanonicalText(html: string, options?: NormalizeOptions): string;
 
@@ -40,7 +40,7 @@ export function extractCanonicalText(html: string, options?: NormalizeOptions): 
  * The caller is responsible for hashing the returned string.
  *
  * @param claims - claim name → value map
- * @returns Canonical serialized string ready to be hashed
+ * @returns Canonical serialized string from the initialized Rust/WASM core
  */
 export function canonicalizeClaims(claims: Record<string, string>): string;
 export const SIGNING_PROFILE_V1: Readonly<{
@@ -64,6 +64,15 @@ export function buildSigningPayloadV1(parts: {
 
 /** Extract direct child `<meta name content>` claims from a signed-section. */
 export function extractClaimsFromSignedSection(html: string): Record<string, string>;
+
+/** Initialize the packaged Node.js WASM module before calling canonical APIs. */
+export function initializeNodeWasm(module?: unknown): Promise<unknown>;
+
+/** Initialize the packaged browser WASM module before calling canonical APIs. */
+export function initializeBrowserWasm(
+  module?: unknown,
+  initializeInput?: unknown,
+): Promise<unknown>;
 
 /** Parts of the canonical signature binding (spec §2.1). */
 export interface SignatureBindingParts {

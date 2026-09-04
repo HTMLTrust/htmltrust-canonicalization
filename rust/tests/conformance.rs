@@ -1,8 +1,7 @@
-//! Conformance tests for the HTMLTrust Rust binding.
+//! Core behavior tests for HTMLTrust canonicalization.
 //!
-//! The 18 normalization cases below are a direct port of
-//! `htmltrust-canonicalization/javascript/test.js` and MUST produce
-//! byte-identical results across all language bindings.
+//! The shared JSON fixtures exercise these operations through Rust and every
+//! language adapter. These tests cover additional library-level invariants.
 
 use std::collections::BTreeMap;
 
@@ -220,10 +219,7 @@ fn extraction_applies_output_limit_after_finalization() {
 #[test]
 fn malformed_json_precedes_surrogate_classification() {
     let error = canonicalize_json_document(br#"{"value":"\uD800"#).unwrap_err();
-    assert!(
-        error.starts_with("jcs-invalid-json:"),
-        "unexpected error: {error}"
-    );
+    assert_eq!(error, "jcs-invalid-json");
 }
 
 #[test]
@@ -271,6 +267,41 @@ fn extract_rejects_malformed_comments() {
     assert_eq!(
         try_extract_canonical_text("<!-- a -- b -->x"),
         Err("parser-profile-unsupported".to_string())
+    );
+}
+
+#[test]
+fn extract_rejects_parser_control_characters() {
+    for character in [
+        '\0', '\u{0001}', '\u{000B}', '\u{001F}', '\u{007F}', '\u{0085}',
+    ] {
+        let html = format!("<p>A{character}B</p>");
+        assert_eq!(
+            try_extract_canonical_text(&html),
+            Err("parser-profile-unsupported".to_string()),
+            "character U+{:04X}",
+            character as u32,
+        );
+    }
+
+    assert_eq!(
+        try_extract_canonical_text("<p>A\t\n\u{000C}\rB</p>"),
+        Ok("A B".to_string()),
+    );
+}
+
+#[test]
+fn empty_base_url_is_absent_and_large_base_is_bounded() {
+    assert_eq!(
+        htmltrust_canonicalization::try_extract_canonical_text_with_base_url("<p>A</p>", Some(""),),
+        Ok("A".to_string()),
+    );
+    assert_eq!(
+        htmltrust_canonicalization::try_extract_canonical_text_with_base_url(
+            "<p>A</p>",
+            Some(&"x".repeat(MAX_DOCUMENT_BYTES + 1)),
+        ),
+        Err("resource-limit-exceeded".to_string()),
     );
 }
 
@@ -357,6 +388,42 @@ fn rejects_duplicate_extracted_claim_names() {
 fn claims_empty() {
     let claims: BTreeMap<String, String> = BTreeMap::new();
     assert_eq!(canonicalize_claims(&claims), "");
+}
+
+#[test]
+fn claims_document_accepts_json_object() {
+    assert_eq!(
+        htmltrust_canonicalization::canonicalize_claims_document(
+            "{\"License\":\"CC-BY-4.0\",\"author\":\"“Alice”\"}".as_bytes(),
+        ),
+        Ok("License:CC-BY-4.0\nauthor:\"Alice\"\n".to_string()),
+    );
+}
+
+#[test]
+fn claims_document_rejects_non_object_duplicate_and_non_string_values() {
+    for input in [
+        br#"[]"#.as_slice(),
+        br#"{"claim":"a","claim":"b"}"#.as_slice(),
+        br#"{"claim":42}"#.as_slice(),
+        b"not-json".as_slice(),
+        b"\xff".as_slice(),
+    ] {
+        assert_eq!(
+            htmltrust_canonicalization::canonicalize_claims_document(input),
+            Err("claim-malformed".to_string()),
+            "input: {input:?}",
+        );
+    }
+}
+
+#[test]
+fn claims_document_preserves_resource_limits() {
+    let oversized = format!(r#"{{"claim":"{}"}}"#, "x".repeat(4097));
+    assert_eq!(
+        htmltrust_canonicalization::canonicalize_claims_document(oversized.as_bytes()),
+        Err("resource-limit-exceeded".to_string()),
+    );
 }
 
 #[test]

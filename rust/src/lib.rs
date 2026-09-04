@@ -1,17 +1,17 @@
-//! HTMLTrust canonicalization (Rust binding).
+//! HTMLTrust canonicalization core.
 //!
-//! Public API:
+//! Checked protocol operations:
 //!
 //! - [`normalize_text`] -- the 8-phase HTMLTrust canonicalization pipeline.
 //! - [`extract_canonical_text`] -- HTML -> canonical text extraction
 //!   (spec §2.1), parses with `scraper` (html5ever) and walks the DOM.
+//! - [`extract_claims_from_signed_section`] -- direct claim metadata extraction.
 //! - [`canonicalize_claims`] -- canonical serialization of claim metadata
 //!   for the `claims-hash` field of the signature binding.
+//! - [`canonicalize_json_document`] -- strict RFC 8785 JSON canonicalization.
 //!
-//! All three functions produce byte-identical output to the JavaScript,
-//! Go, PHP, and Python bindings. The 18 conformance cases in
-//! `tests/conformance.rs` are a direct port of the shared test suite
-//! (`htmltrust-canonicalization/javascript/test.js`).
+//! JavaScript, Go, Python, and PHP call this implementation through the FFI
+//! crate's native or WebAssembly boundary.
 
 use std::collections::BTreeMap;
 
@@ -274,7 +274,7 @@ pub fn extract_canonical_text_with_options(html: &str, options: ExtractOptions<'
 
 /// Fallible extraction entry point with explicit options. Source HTML, base
 /// URL, and canonical output are each limited to
-/// [`MAX_DOCUMENT_BYTES`].
+/// [`MAX_DOCUMENT_BYTES`]. An empty base URL is treated as absent.
 pub fn try_extract_canonical_text(html: &str) -> Result<String, String> {
     try_extract_canonical_text_with_options(html, ExtractOptions::default())
 }
@@ -309,6 +309,7 @@ pub fn try_extract_canonical_text_with_options(
         return Err(PARSER_UNSUPPORTED.to_string());
     }
     let base = match options.base_url {
+        Some("") | None => None,
         Some(raw) => {
             if raw.len() > MAX_DOCUMENT_BYTES {
                 return Err(RESOURCE_LIMIT.to_string());
@@ -323,7 +324,6 @@ pub fn try_extract_canonical_text_with_options(
             }
             Some(parsed)
         }
-        None => None,
     };
 
     let mut out = String::new();
@@ -442,6 +442,14 @@ pub fn extract_claims_from_signed_section(html: &str) -> Result<BTreeMap<String,
 }
 
 fn preflight_source(html: &str) -> Result<(), String> {
+    if html.chars().any(|character| {
+        matches!(
+            character as u32,
+            0x0000..=0x0008 | 0x000B | 0x000E..=0x001F | 0x007F..=0x009F
+        )
+    }) {
+        return Err(PARSER_UNSUPPORTED.to_string());
+    }
     let lower = html.to_ascii_lowercase();
     // A small source-level stack catches EOF-implied closes and lets us reject
     // malformed nesting before html5ever has a chance to repair it. It is
@@ -799,7 +807,7 @@ fn canonicalize_url(raw: &str, base_url: Option<&Url>) -> Result<String, String>
     if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("url-policy-violation".to_string());
     }
-    Ok(escape_at_signs(&parsed.to_string()))
+    Ok(escape_at_signs(parsed.as_str()))
 }
 
 fn escape_at_signs(value: &str) -> String {
@@ -902,6 +910,33 @@ pub fn canonicalize_claims_checked(claims: &BTreeMap<String, String>) -> Result<
     Ok(result)
 }
 
+/// Parse a UTF-8 JSON object of string claim values and serialize it using the
+/// checked v1 claims contract.
+///
+/// This byte-oriented entry point is intended for FFI callers. It accepts the
+/// same JSON object shape used by the conformance fixtures, rejects malformed
+/// JSON, duplicate object members, non-object roots, and non-string values as
+/// `claim-malformed`, and preserves the resource limits enforced by
+/// [`canonicalize_claims_checked`].
+pub fn canonicalize_claims_document(raw: &[u8]) -> Result<String, String> {
+    if raw.len() > MAX_DOCUMENT_BYTES {
+        return Err(RESOURCE_LIMIT.to_string());
+    }
+    enforce_json_nesting_limit(raw)?;
+    let value = parse_strict_json(raw).map_err(|_| "claim-malformed".to_string())?;
+    let StrictJson::Object(object) = value else {
+        return Err("claim-malformed".to_string());
+    };
+    let claims = object
+        .into_iter()
+        .map(|(name, value)| match value {
+            StrictJson::String(value) => Ok((name, value)),
+            _ => Err("claim-malformed".to_string()),
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    canonicalize_claims_checked(&claims)
+}
+
 fn escape_claim_component(value: &str) -> String {
     // Ordering matters: escape the escape character before introducing any
     // escapes for the other delimiters.
@@ -948,8 +983,8 @@ pub fn canonicalize_json_document(raw: &[u8]) -> Result<String, String> {
     if has_negative_zero_number(raw) {
         return Err("jcs-number".to_string());
     }
-    let output = serde_json_canonicalizer::to_string(&value)
-        .map_err(|e| format!("jcs-invalid-json: {e}"))?;
+    let output =
+        serde_json_canonicalizer::to_string(&value).map_err(|_| "jcs-invalid-json".to_string())?;
     if output.len() > MAX_DOCUMENT_BYTES {
         return Err("resource-limit-exceeded".to_string());
     }
@@ -1051,7 +1086,7 @@ fn map_json_error(error: serde_json::Error) -> String {
     } else if msg.contains("duplicate object key") {
         "jcs-duplicate-key".to_string()
     } else {
-        format!("jcs-invalid-json: {msg}")
+        "jcs-invalid-json".to_string()
     }
 }
 

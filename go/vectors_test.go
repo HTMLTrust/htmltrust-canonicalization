@@ -12,6 +12,7 @@ import (
 // §5 signing payload -> signature verification. This is the byte-level anchor
 // that every signer and verifier must agree on.
 func TestEndToEndVectors(t *testing.T) {
+	core := testRustCore(t)
 	type vector struct {
 		Algorithm string `json:"algorithm"`
 		Key       struct {
@@ -46,7 +47,7 @@ func TestEndToEndVectors(t *testing.T) {
 		if err := json.Unmarshal(raw, &v); err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
-		content, err := ExtractCanonicalText(v.Input.HTML, Options{BaseURL: v.Input.BaseURL})
+		content, err := core.ExtractCanonicalText(v.Input.HTML, false, &v.Input.BaseURL)
 		if err != nil {
 			t.Fatalf("%s: extract: %v", path, err)
 		}
@@ -56,7 +57,7 @@ func TestEndToEndVectors(t *testing.T) {
 		if got := sha(content); got != v.ContentHash {
 			t.Errorf("%s: contentHash got %s want %s", path, got, v.ContentHash)
 		}
-		claims, err := CanonicalizeClaimsStrict(v.Claims)
+		claims, err := core.CanonicalizeClaims(v.Claims)
 		if err != nil {
 			t.Fatalf("%s: claims: %v", path, err)
 		}
@@ -66,7 +67,7 @@ func TestEndToEndVectors(t *testing.T) {
 		if got := sha(claims); got != v.ClaimsHash {
 			t.Errorf("%s: claimsHash got %s want %s", path, got, v.ClaimsHash)
 		}
-		payload, err := BuildSigningPayloadV1(SigningProfileV1Input{
+		payload, err := core.BuildSigningPayloadV1(SigningProfileV1Input{
 			ContentHash: v.ContentHash, ClaimsHash: v.ClaimsHash,
 			DocumentURL: v.Input.DocumentURL, Scope: v.Input.Scope,
 			KeyID: v.Input.KeyID, Algorithm: v.Algorithm, SignedAt: v.Input.SignedAt,

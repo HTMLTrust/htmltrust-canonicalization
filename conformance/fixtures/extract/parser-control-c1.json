@@ -1,0 +1,6 @@
+{
+  "name": "parser-control-c1",
+  "description": "A raw C1 parser-control character must be rejected before tree recovery.",
+  "input": "<p>A\u0085B</p>",
+  "error": "parser-profile-unsupported"
+}

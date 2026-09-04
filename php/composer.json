@@ -1,6 +1,6 @@
 {
   "name": "htmltrust/canonicalization",
-  "description": "HTMLTrust canonical text normalization for PHP",
+  "description": "PHP adapter for the HTMLTrust Rust canonicalization core",
   "type": "library",
   "license": "Apache-2.0",
   "autoload": {
@@ -15,13 +15,11 @@
   },
   "require": {
     "php": ">=8.5",
-    "ext-dom": "*",
-    "ext-intl": "*",
-    "ext-mbstring": "*",
+    "ext-ffi": "*",
+    "ext-uri": "*",
     "ext-json": "*",
     "ext-openssl": "*",
-    "ext-sodium": "*",
-    "root23/php-json-canonicalization": "1.0.1"
+    "ext-sodium": "*"
   },
   "suggest": {
     "ext-curl": "Used by the default HttpFetcher for keyid resolution; falls back to file_get_contents when missing."

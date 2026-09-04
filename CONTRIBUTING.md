@@ -1,53 +1,54 @@
 # Contributing
 
-Thanks for helping move HTMLTrust forward.
+Changes to HTMLTrust Canonicalization are welcome. Rust owns every canonical
+byte. JavaScript, Go, Python, and PHP provide adapters plus their native
+signing, resolver, and authoring APIs.
 
-## Contribution Flow
+## Before you start
 
-1. Fork the repository.
-2. Create a branch for your change.
-3. Run the project's existing checks (tests, linters, conformance vectors —
-   see the README for the specific commands).
-4. Open a pull request against `main`.
+Install Git and Docker Engine with the Compose plugin. Open an issue before a
+protocol change, a new normalization rule, or a public API break. State the
+input and expected bytes or error code. Describe the compatibility effect.
 
-For larger changes (a new resolver, a new normalization phase, a new spec
-section), open an issue first to talk about scope. Saves everyone time.
+## Make a change
 
-## What's in scope
+1. Fork the repository and create a focused branch.
+2. Change canonicalization behavior in `rust/`.
+3. Add a fixture under `conformance/fixtures/` for each protocol behavior.
+4. Update an adapter only when its boundary or native API changes.
+5. Run the complete check from the repository root:
 
-- Code, tests, and conformance vectors that improve any of the reference
-  implementations.
-- Spec clarifications, examples, and edits that fix ambiguity.
-- Bug fixes, security fixes, performance improvements.
-- New language bindings of the canonicalization library that pass the
-  conformance suite.
+```sh
+make test-docker
+```
 
-## What's out of scope
+The command builds one native and WebAssembly artifact set and exercises each
+source and installed package. Every language runs all 130 fixtures. Include
+the command and result in the pull request.
 
-HTMLTrust is a mechanism, not a value judgment. The project does **not**
-accept contributions or issues for:
+## Pull requests
 
-- Debates over whether AI should or shouldn't be used to author software or specifications.
-- Lists of "approved" vs "disapproved" signers.
-- Political, religious, or philosophical positions on what content should be trusted.
-- Trust directory operator policies — those belong to the directory operators.
+Describe the observable behavior and any public API changes. Include the
+stable error code when failure behavior changes. Keep generated build output
+out of Git; the Docker pipeline writes it to a disk-backed artifact directory.
 
-The protocol is deliberately neutral so anyone can sign anything they
-publish and any user can decide for themselves whom to trust. If you want
-to debate the answers, that's a different project.
+Bug fixes, security work, performance changes, documentation, and new language
+adapters belong in this repository. A new adapter must call the Rust core and
+pass the conformance suite.
 
-## Legal and Attribution
+Decisions about acceptable signers or content belong to applications and trust
+directory operators. Issues about political, religious, or philosophical
+trust policies are outside this repository's scope.
 
-- By submitting a contribution, you agree your change is provided under the
-  repository's license (`PolyForm-Noncommercial-1.0.0` for code repos,
-  `CC-BY-NC-ND-4.0` for the spec and website).
-- Keep existing copyright, license, and notice text intact.
-- AI-assisted contributions are fine. If the contribution is substantial,
-  briefly disclose the tools used in the PR description.
+## Legal and attribution
 
-## Code of Conduct
+Contributions use the repository license. Keep existing copyright, license,
+and notice text intact. Briefly disclose substantial AI assistance in the pull
+request description.
 
-Be technical. Be precise. Don't waste people's time.
+Technical disagreements should include a reproducible input and observed
+output. Cite the relevant protocol text.
+
 
 ## Licensing your contribution
 

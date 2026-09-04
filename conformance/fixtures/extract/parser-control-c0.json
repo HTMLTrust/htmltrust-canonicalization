@@ -1,0 +1,6 @@
+{
+  "name": "parser-control-c0",
+  "description": "A raw C0 parser-control character must be rejected before tree recovery.",
+  "input": "<p>A\u0001B</p>",
+  "error": "parser-profile-unsupported"
+}

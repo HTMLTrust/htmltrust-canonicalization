@@ -3,7 +3,7 @@
 /**
  * PHP conformance runner for HTMLTrust canonicalization.
  *
- * Reads every fixture under conformance/fixtures/{normalize,extract,claims}/
+ * Reads every fixture under conformance/fixtures/{normalize,extract,claims,jcs}/
  * and compares the binding output byte-for-byte against the `expected`
  * field. Exits non-zero on any divergence.
  *
@@ -12,20 +12,28 @@
  *   php run-php.php --update   # rewrite `expected` from the current
  *                              # binding output
  *
- * The PHP binding covers normalize, extract, claims, and JCS fixtures.
- *
- * Requires PHP 8.5+ with DOM and intl extensions.
+ * HTMLTRUST_RUST_CORE_LIB must name the absolute Rust shared-library path.
+ * Requires PHP 8.5+ with FFI enabled.
  */
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../../php/src/Canonicalize.php';
-$autoload = __DIR__ . '/../../php/vendor/autoload.php';
-if (is_file($autoload)) {
+if (getenv('HTMLTRUST_PHP_PACKAGE_MODE') === 'installed') {
+    $autoload = getenv('HTMLTRUST_PHP_PACKAGE_AUTOLOAD');
+    if (!is_string($autoload) || !is_file($autoload)) {
+        throw new RuntimeException('installed PHP package autoloader is required');
+    }
     require_once $autoload;
+} else {
+    require_once __DIR__ . '/../../php/src/RustCoreError.php';
+    require_once __DIR__ . '/../../php/src/RustCore.php';
+    $autoload = __DIR__ . '/../../php/vendor/autoload.php';
+    if (is_file($autoload)) {
+        require_once $autoload;
+    }
 }
 
-use HTMLTrust\Canonicalization\Canonicalize;
+use HTMLTrust\Canonicalization\RustCore;
 
 $confDir     = realpath(__DIR__ . '/..');
 $repoRoot    = realpath(__DIR__ . '/../..');
@@ -41,13 +49,21 @@ foreach (array_slice($argv, 1) as $arg) {
     }
 }
 
+$rustCoreLibrary = getenv('HTMLTRUST_RUST_CORE_LIB');
+if (!is_string($rustCoreLibrary) || $rustCoreLibrary === '') {
+    fwrite(STDERR, "HTMLTRUST_RUST_CORE_LIB is required\n");
+    exit(2);
+}
+$rustCore = new RustCore($rustCoreLibrary);
+echo "MODE: RustCore ({$rustCoreLibrary})\n";
+
 /**
  * Per-suite runner. Returns [string|null $output, bool $implemented].
  * $output is null when the binding has no implementation; callers
  * report SKIP rather than FAIL in that case.
  */
 $runners = [
-    'normalize' => static function (array $fx) {
+    'normalize' => static function (array $fx) use ($rustCore) {
         if (!is_string($fx['input'])) {
             throw new RuntimeException('normalize fixture input must be a string');
         }
@@ -55,9 +71,9 @@ $runners = [
         if (isset($fx['repeat'])) {
             $input = str_repeat($input, (int) $fx['repeat']);
         }
-        return [Canonicalize::normalizeText($input), true];
+        return [$rustCore->normalizeText($input), true];
     },
-    'extract' => static function (array $fx) {
+    'extract' => static function (array $fx) use ($rustCore) {
         if (!is_string($fx['input'])) {
             throw new RuntimeException('extract fixture input must be a string');
         }
@@ -65,9 +81,10 @@ $runners = [
         if (isset($fx['repeat'])) {
             $input = str_repeat($input, (int) $fx['repeat']);
         }
-        return [Canonicalize::extractCanonicalText($input, false, $fx['baseURL'] ?? null), true];
+        $baseUrl = array_key_exists('baseURL', $fx) ? $fx['baseURL'] : null;
+        return [$rustCore->extractCanonicalText($input, false, $baseUrl), true];
     },
-    'claims' => static function (array $fx) {
+    'claims' => static function (array $fx) use ($rustCore) {
         if (!is_array($fx['input'])) {
             throw new RuntimeException('claims fixture input must be an object');
         }
@@ -80,9 +97,9 @@ $runners = [
                 }
             }
         }
-        return [Canonicalize::canonicalizeClaims($input), true];
+        return [$rustCore->canonicalizeClaims($input), true];
     },
-    'jcs' => static function (array $fx) {
+    'jcs' => static function (array $fx) use ($rustCore) {
         if (!is_string($fx['input'])) {
             throw new RuntimeException('jcs fixture input must be a raw JSON string');
         }
@@ -90,7 +107,7 @@ $runners = [
         if (isset($fx['repeat'])) {
             $input = str_repeat($input, (int) $fx['repeat']);
         }
-        return [Canonicalize::canonicalizeJsonDocument($input), true];
+        return [$rustCore->canonicalizeJsonDocument($input), true];
     },
 ];
 

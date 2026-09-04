@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Python conformance runner for HTMLTrust canonicalization.
 
-Reads every fixture under conformance/fixtures/{normalize,extract,claims}/
+Reads every fixture under conformance/fixtures/{normalize,extract,claims,jcs}/
 and compares the binding output byte-for-byte against the ``expected``
 field. Exits non-zero on any divergence.
 
@@ -10,9 +10,7 @@ Usage:
     python3 run-python.py --update  # rewrite ``expected`` from the
                                     # current binding output
 
-Python is the source of truth for the ``extract`` and ``claims``
-fixtures' ``expected`` values: those suites are not (yet) implemented
-by JavaScript, Go, or PHP, but Rust must match Python.
+``HTMLTRUST_RUST_CORE_LIB`` must name the absolute Rust shared-library path.
 """
 
 from __future__ import annotations
@@ -28,15 +26,14 @@ CONF_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = CONF_DIR.parent
 FIXTURES_ROOT = CONF_DIR / "fixtures"
 
-# Make the in-tree Python binding importable without installing it.
-sys.path.insert(0, str(REPO_ROOT / "python"))
+# The ordinary runner imports the checkout directly. Shared-core package tests
+# set this flag after installing a wheel so conformance exercises that layout.
+if os.environ.get("HTMLTRUST_PYTHON_PACKAGE_MODE") != "installed":
+    sys.path.insert(0, str(REPO_ROOT / "python"))
 
-from htmltrust_canonicalization import (  # noqa: E402
-    canonicalize_claims,
-    extract_canonical_text,
-    normalize_text,
-    canonicalize_json_document,
-)
+from htmltrust_canonicalization import RustCore  # noqa: E402
+
+RUST_CORE = None
 
 
 def expand_input(fixture: dict):
@@ -59,19 +56,20 @@ def expand_input(fixture: dict):
 
 
 def run_normalize(fixture: dict) -> str:
-    return normalize_text(expand_input(fixture))
+    return RUST_CORE.normalize_text(expand_input(fixture))
 
 
 def run_extract(fixture: dict) -> str:
-    return extract_canonical_text(expand_input(fixture), base_url=fixture.get("baseURL"))
+    base_url = fixture["baseURL"] if "baseURL" in fixture else None
+    return RUST_CORE.extract_canonical_text(expand_input(fixture), base_url=base_url)
 
 
 def run_claims(fixture: dict) -> str:
-    return canonicalize_claims(expand_input(fixture))
+    return RUST_CORE.canonicalize_claims(expand_input(fixture))
 
 
 def run_jcs(fixture: dict) -> str:
-    return canonicalize_json_document(expand_input(fixture))
+    return RUST_CORE.canonicalize_json_document(expand_input(fixture))
 
 
 RUNNERS = {
@@ -102,6 +100,7 @@ def save(path: Path, data: dict) -> None:
 
 
 def main() -> int:
+    global RUST_CORE
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument(
         "--update",
@@ -110,6 +109,12 @@ def main() -> int:
         "binding output instead of comparing.",
     )
     args = parser.parse_args()
+
+    library_path = os.environ.get("HTMLTRUST_RUST_CORE_LIB")
+    if not library_path:
+        parser.error("HTMLTRUST_RUST_CORE_LIB is required")
+    RUST_CORE = RustCore(library_path)
+    print(f"MODE: RustCore ({library_path})")
 
     passed = 0
     failed = 0

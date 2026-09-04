@@ -3,17 +3,18 @@
 # The cross-language conformance suite is the public contract: every
 # implementation must produce byte-identical output for every fixture
 # under `conformance/fixtures/`. `make conformance` exercises every
-# runnable language.
+# Rust-backed language adapter.
 
-.PHONY: test-docker conformance conformance-update conformance-js conformance-go \
+.PHONY: test-docker test-shared-core core-artifacts conformance conformance-update conformance-js conformance-go \
         conformance-php conformance-python conformance-rust help
 
 help:
 	@echo "Targets:"
-	@echo "  test-docker         Test all five bindings in isolated containers."
+	@echo "  test-docker         Build Rust core and test every adapter."
+	@echo "  test-shared-core    Alias for test-docker."
+	@echo "  core-artifacts      Build only the Rust native/WASM artifacts."
 	@echo "  conformance         Run every per-language conformance runner."
-	@echo "  conformance-update  Regenerate fixture 'expected' fields from"
-	@echo "                      the current Python+Rust output."
+	@echo "  conformance-update  Regenerate fixture 'expected' fields from Rust."
 	@echo "  conformance-<lang>  Run a single language's runner (js, go,"
 	@echo "                      php, python, rust)."
 
@@ -23,13 +24,14 @@ conformance:
 test-docker:
 	./scripts/test-in-docker.sh
 
-# Regenerate fixture expected fields. Run each available language with
-# --update; later runs overwrite earlier ones if they disagree, which
-# is what you want -- the last language to run is the source of truth.
-#
-# We run Rust last because it's the only non-Python language that
-# implements extract/ and claims/; if you want Python to win, swap the
-# order in run-all.sh's language list.
+test-shared-core:
+	./scripts/test-in-docker.sh
+
+core-artifacts:
+	./scripts/test-in-docker.sh --artifacts-only
+
+# Regenerate fixture expected fields from Rust, then verify all adapters
+# against those values.
 conformance-update:
 	./conformance/run-all.sh --update
 

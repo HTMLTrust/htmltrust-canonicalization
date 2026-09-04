@@ -1,112 +1,101 @@
 # HTMLTrust Canonicalization for Rust
 
-This crate implements the Rust binding for `htmltrust-c14n-v1`. It normalizes
-text, extracts signed content from HTML, canonicalizes claims, and
-canonicalizes raw JSON under RFC 8785. The shared fixtures require the same
-bytes from the JavaScript, Go, PHP, Python, and Rust bindings.
+This crate is the sole canonicalization implementation for
+`htmltrust-c14n-v1`. It normalizes text, extracts HTML, reads direct claims,
+serializes claims, and canonicalizes strict JSON. Other language packages call
+this code through the artifacts in [`../ffi/`](../ffi/).
 
-Version: `0.3.0` release candidate
-Rust: 1.86 or newer
+**Author:** HTMLTrust contributors
 
-## Test a fresh checkout
+**Date:** 2026-08-29
 
-From the repository root, Docker runs the Rust unit tests, native FFI tests,
-and every shared conformance fixture:
+**Version:** 0.3.0 release candidate
 
-```sh
-docker compose -f compose.test.yml run --rm rust
-```
+**Status:** Rust reference crate, Linux amd64 validation lane
 
-Run `./scripts/test-in-docker.sh` to test all five language bindings.
+**Readers:** Rust developers and binding maintainers
 
-With Rust installed locally:
+**Reading time:** 3 minutes
+
+## Prerequisites and shortest test
+
+Install Rust 1.86 or newer. From the repository root:
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml
-cargo test --locked --manifest-path ffi/Cargo.toml
 ```
+
+The complete artifact-backed test is:
+
+```sh
+make test-docker
+```
+
+That command runs this crate, the FFI crate, and every adapter against one
+Rust build. The native validation lane is Linux amd64.
 
 ## Install
 
-Use the repository while `0.3.0` is under review:
+During the 0.3.0 release candidate, use a path dependency from a checkout:
 
 ```toml
 [dependencies]
-htmltrust-canonicalization = { git = "https://github.com/HTMLTrust/htmltrust-canonicalization", rev = "<commit>" }
+htmltrust-canonicalization = { path = "../htmltrust-canonicalization/rust" }
 ```
 
-After the crate is published, use the release series:
+Pin a reviewed tag or full commit for application releases. The retained Git
+history includes the previous protocol tag `v0.2.2`; inspect it with
+`git show v0.2.2`.
 
-```toml
-[dependencies]
-htmltrust-canonicalization = "0.3"
-```
+## API
 
-## Profile-v1 API
+The checked v1 functions are the application entry points:
 
-- `try_normalize_text` normalizes a UTF-8 `str` and enforces the 1 MiB source
-  and output limits.
-- `try_normalize_text_v1` accepts bytes and rejects invalid UTF-8 as
-  `parser-profile-unsupported`.
-- `try_extract_canonical_text_with_options` parses HTML with explicit legacy
-  compatibility whitespace and resolved base URL options. Profile-v1 callers
-  use `preserve_whitespace: false`; the portable profile rejects nesting
-  deeper than 256 elements.
-- `canonicalize_claims_checked` validates, sorts, escapes, and serializes
-  claim metadata.
-- `canonicalize_json_document` validates and canonicalizes one raw JSON
-  document, including duplicate-key checks.
+- `try_normalize_text` and `try_normalize_text_v1` normalize UTF-8 text.
+- `try_extract_canonical_text_with_options` extracts canonical HTML.
+- `extract_claims_from_signed_section` reads direct claims from the first signed section.
+- `canonicalize_claims_checked` serializes validated claims.
+- `canonicalize_json_document` validates and serializes one JSON document.
 
-The infallible normalization, extraction, and claims functions remain for
-`0.2` callers that enforce their own limits. New signing code should use the
-fallible functions above.
-
-## Example
+Use the checked functions for protocol input. Text, HTML, JSON, and nonempty
+base URLs have a 1 MiB limit. A missing base URL means relative signed links
+cannot be resolved. The caller's source-snapshot layer resolves HTML `<base>`
+processing and passes the resulting URL.
 
 ```rust
 use std::collections::BTreeMap;
 use htmltrust_canonicalization::{
-    canonicalize_claims_checked,
-    try_extract_canonical_text_with_options,
-    try_normalize_text,
-    ExtractOptions,
+    canonicalize_claims_checked, extract_claims_from_signed_section,
+    try_extract_canonical_text_with_options, try_normalize_text, ExtractOptions,
 };
 
-let canonical = try_normalize_text("He said, \"Hello\u{2026}\"", false)?;
-assert_eq!(canonical, "He said, \"Hello...\"");
-
+let text = try_normalize_text("He said, \"Hello…\"", false)?;
 let content = try_extract_canonical_text_with_options(
     "<p>Read <a href=\"/paper\">the paper</a>.</p>",
-    ExtractOptions {
-        preserve_whitespace: false,
-        base_url: Some("https://example.org/article"),
-    },
+    ExtractOptions { preserve_whitespace: false, base_url: Some("https://example.org/article") },
 )?;
-
-let claims = BTreeMap::from([
-    ("License".to_string(), "CC-BY-4.0".to_string()),
-]);
+let claims = BTreeMap::from([("License".to_string(), "CC-BY-4.0".to_string())]);
 let claim_bytes = canonicalize_claims_checked(&claims)?;
-assert_eq!(claim_bytes, "License:CC-BY-4.0\n");
+let found = extract_claims_from_signed_section(
+    "<signed-section><meta name=\"claim:License\" content=\"CC-BY-4.0\"></signed-section>"
+)?;
 # Ok::<(), String>(())
 ```
 
-Relative `href` and `src` attributes require an HTTPS base URL. The safe URL
-profile rejects credentials, control characters, and unsupported schemes.
+The safe URL profile accepts HTTPS URLs and rejects credentials, controls, and
+unsupported schemes. Parser controls return `parser-profile-unsupported`.
 
-The caller's source-snapshot layer must compute the document base URL using the
-HTML Standard, including any `<base>` element, and pass that resolved URL as
-`base_url`. This binding does not discover `<base>` elements itself; relative
-signed URLs are rejected when no base URL is supplied.
+## FFI and WebAssembly
 
-## Native FFI
+The [`ffi`](../ffi/) crate exports the same checked behavior through C ABI v1
+and generated `wasm-bindgen` modules. Go, Python, and PHP use an explicit
+absolute path to the native library. JavaScript uses the packaged
+`wasm-node/` or `wasm-web/` module and awaits its initializer in browser code.
 
-The `ffi/` crate exposes length-based `*_v1` functions for normalization and
-extraction. Status `0` means success, status `1` returns an allocated UTF-8
-error code, and status `2` reports an invalid pointer. Every valid output
-pointer is cleared before input decoding. Release returned byte buffers with
-`htmltrust_bytes_free`.
+Use `make core-artifacts` to build the native library, header, both WASM
+layouts, and `MANIFEST.txt`. Use `make test-docker` to validate every consumer.
+See the [shared-core integration guide](../docs/RUST-SHARED-CORE.md) for ABI
+status and ownership rules.
 
-The normative protocol text is maintained in the
-[HTMLTrust specification](https://github.com/HTMLTrust/htmltrust-spec/tree/main/ietf-draft).
-The repository's shared fixtures are the executable cross-language contract.
+Report a failure with the command, target, tool versions, artifact manifest,
+and complete output in a GitHub issue.

@@ -3,16 +3,36 @@
   "version": "0.3.0",
   "description": "HTMLTrust canonical text normalization, signature verification, and key resolution for browsers and Node.js",
   "type": "module",
-  "main": "javascript/index.js",
+  "main": "javascript/node.js",
   "exports": {
-    ".": "./javascript/index.js",
+    ".": {
+      "types": "./javascript/index.d.ts",
+      "browser": "./javascript/browser.js",
+      "node": "./javascript/node.js",
+      "default": "./javascript/node.js"
+    },
+    "./node": {
+      "types": "./javascript/index.d.ts",
+      "import": "./javascript/node.js"
+    },
+    "./browser": {
+      "types": "./javascript/index.d.ts",
+      "import": "./javascript/browser.js"
+    },
     "./portable-authoring": {
       "types": "./javascript/portable-authoring.d.ts",
-      "import": "./javascript/portable-authoring.js"
+      "browser": "./javascript/portable-authoring.js",
+      "node": "./javascript/portable-authoring-node.js",
+      "default": "./javascript/portable-authoring-node.js"
+    },
+    "./rust-wasm": {
+      "types": "./javascript/rust-wasm.d.ts",
+      "import": "./javascript/rust-wasm.js"
     }
   },
   "types": "javascript/index.d.ts",
   "scripts": {
+    "prepack": "node javascript/verify-package.js",
     "test": "node javascript/test.js",
     "portable-preflight": "node javascript/bin/portable-authoring.js"
   },
@@ -25,9 +45,16 @@
   "files": [
     "javascript/index.js",
     "javascript/index.d.ts",
-    "javascript/entities.js",
+    "javascript/node.js",
+    "javascript/browser.js",
     "javascript/portable-authoring.js",
+    "javascript/portable-authoring-node.js",
     "javascript/portable-authoring.d.ts",
+    "javascript/rust-wasm.js",
+    "javascript/rust-wasm.d.ts",
+    "javascript/verify-package.js",
+    "javascript/wasm-node/",
+    "javascript/wasm-web/",
     "javascript/bin/portable-authoring.js"
   ],
   "keywords": [
