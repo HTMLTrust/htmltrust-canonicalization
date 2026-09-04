@@ -1,0 +1,17 @@
+{
+  "name": "htmltrust-canonicalization-independent-js",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent vanilla-JS implementation of HTMLTrust canonicalization, maintained as a differential-testing oracle against the project's Rust core. Not a production binding.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./canonicalize.js"
+  },
+  "scripts": {
+    "conformance": "python3 ../../conformance/run-external.py --verify-fixtures -v -- node ./conformance-runner.mjs"
+  },
+  "dependencies": {
+    "parse5": "^7.1.2"
+  }
+}
