@@ -2,7 +2,7 @@
   "name": "htmltrust/canonicalization",
   "description": "PHP adapter for the HTMLTrust Rust canonicalization core",
   "type": "library",
-  "license": "LicenseRef-PolyForm-Noncommercial-1.0.0",
+  "license": "Apache-2.0",
   "autoload": {
     "psr-4": {
       "HTMLTrust\\Canonicalization\\": "php/src/"
