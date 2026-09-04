@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Python adapter for the HTMLTrust Rust canonicalization core."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+license = "Apache-2.0"
 authors = [
     { name = "HTMLTrust contributors" },
 ]
