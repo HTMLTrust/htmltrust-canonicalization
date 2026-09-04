@@ -17,6 +17,25 @@ output with the checked-in fixtures.
 
 **Reading time:** 4 minutes
 
+## Testing an implementation that is not in this repository
+
+The runners below load this repository's bindings, so they check adapter
+parity, not specification conformance. To test an independent implementation,
+use the language-agnostic driver instead:
+
+```sh
+python3 conformance/run-external.py --verify-fixtures -- <your command>
+```
+
+Your program speaks JSON Lines on stdin and stdout. The whole contract is in
+[PROTOCOL.md](PROTOCOL.md) and the minimal implementation there is nine lines.
+Nothing in that path imports an HTMLTrust binding, so a passing run means your
+implementation matches the fixtures rather than matching our code.
+
+Passing this suite is the one condition in the
+[trademark policy](https://www.htmltrust.org/trademark/) for using the
+HTMLTrust name.
+
 ## Run the suite
 
 Docker builds Rust and the FFI library before starting the adapter services:
