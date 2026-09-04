@@ -634,19 +634,26 @@ await check('didWebResolver fetches did.json and extracts key', async () => {
 
 await check('didWebResolver preserves path escapes and decodes an encoded port', async () => {
   let requested;
+  const did = 'did:web:example.com%3A3000:user%2Falice';
   const resolver = didWebResolver({
     fetch: async (url) => {
       requested = url;
       return {
         ok: true,
         headers: { get: (name) => name === 'content-type' ? 'application/json' : null },
-        text: async () => JSON.stringify({ verificationMethod: [{ publicKeyPem: edPubPem }] }),
+        text: async () => JSON.stringify({
+          id: did,
+          verificationMethod: [{ id: '#key-1', publicKeyPem: edPubPem }],
+        }),
       };
     },
   });
-  const resolved = await resolver.resolve('did:web:example.com%3A3000:user%2Falice#key-1');
+  const resolved = await resolver.resolve(`${did}#key-1`);
   assert(resolved, 'expected did:web resolution');
   assertEq(requested, 'https://example.com:3000/user%2Falice/did.json');
+  assertEq(resolved.period, 0, 'an anchor fragment carries period 0');
+  assertEq(resolved.identity, did);
+  assertEq(resolved.methodId, `${did}#key-1`);
 });
 
 await check('didWebResolver rejects empty userinfo in authority', async () => {
@@ -932,6 +939,213 @@ await check('portable authoring wraps only equivalent fragments', () => {
     }
     assert(threw, 'ambiguous wrapping input must be rejected');
   }
+});
+
+// ---- Period-scoped key selection (draft §9.10) ----
+
+const didSelectionVectorsPath = new URL('../conformance/vectors/did-selection-v1.json', import.meta.url);
+const didSelectionVectors = JSON.parse(readFileSync(didSelectionVectorsPath, 'utf8'));
+
+function findDidDocument(vectorCase) {
+  if (vectorCase.didDocument) return vectorCase.didDocument;
+  const ref = didSelectionVectors.cases.find((c) => c.name === vectorCase.didDocumentRef);
+  if (!ref) throw new Error(`no such didDocumentRef: ${vectorCase.didDocumentRef}`);
+  return ref.didDocument;
+}
+
+function jsonFetchStub(expectedUrl, body) {
+  return async (url) => {
+    if (url !== expectedUrl) return { ok: false, status: 404 };
+    return {
+      ok: true,
+      headers: { get: (name) => (name === 'content-type' ? 'application/json' : null) },
+      text: async () => JSON.stringify(body),
+    };
+  };
+}
+
+for (const vectorCase of didSelectionVectors.cases) {
+  await check(`did-selection-v1: ${vectorCase.name}`, async () => {
+    let resolved = null;
+    let thrown = null;
+    if (!vectorCase.kind || vectorCase.kind === 'did') {
+      const doc = findDidDocument(vectorCase);
+      const resolver = didWebResolver({ fetch: jsonFetchStub('https://example.com/.well-known/did.json', doc) });
+      try {
+        resolved = await resolver.resolve(vectorCase.keyid);
+      } catch (error) {
+        thrown = error;
+      }
+    } else if (vectorCase.kind === 'url') {
+      const resolver = directUrlResolver({ fetch: jsonFetchStub(vectorCase.keyid, vectorCase.keyDocument) });
+      try {
+        resolved = await resolver.resolve(vectorCase.keyid);
+      } catch (error) {
+        thrown = error;
+      }
+    } else if (vectorCase.kind === 'directory') {
+      const base = 'https://directory.example';
+      const url = `${base}/keys/${encodeURIComponent(vectorCase.keyid)}`;
+      const resolver = trustDirectoryResolver({ baseUrls: [base], fetch: jsonFetchStub(url, vectorCase.keyDocument) });
+      try {
+        resolved = await resolver.resolve(vectorCase.keyid);
+      } catch (error) {
+        thrown = error;
+      }
+    } else {
+      throw new Error(`unknown vector case kind: ${vectorCase.kind}`);
+    }
+
+    const expected = vectorCase.expected;
+    if (expected.outcome === 'resolved') {
+      assert(!thrown, `expected resolution, got throw: ${thrown?.message}`);
+      assert(resolved, `expected a resolution for ${vectorCase.name}`);
+      if (expected.methodId !== undefined) assertEq(resolved.methodId, expected.methodId, 'methodId');
+      if (expected.period !== undefined) assertEq(resolved.period, expected.period, 'period');
+      if (expected.identity !== undefined) assertEq(resolved.identity, expected.identity, 'identity');
+      if (expected.publicKeyPem !== undefined) assertEq(resolved.publicKeyPem, expected.publicKeyPem, 'publicKeyPem');
+      if (expected.revoked !== undefined) assertEq(!!resolved.revoked, expected.revoked, 'revoked');
+    } else if (expected.outcome === 'key-resolution-failed') {
+      assert(!thrown, `expected a decline (null), got throw: ${thrown?.message}`);
+      assertEq(resolved, null, 'expected key-resolution-failed (null)');
+    } else if (expected.outcome === 'malformed-key-document') {
+      assert(thrown, 'expected malformed-key-document to throw');
+      assertEq(thrown.message, 'malformed-key-document');
+    } else {
+      throw new Error(`unknown expected outcome: ${expected.outcome}`);
+    }
+  });
+}
+
+await check('didWebResolver negative-caches an unresolved fragment for 60s and does not refetch within that window', async () => {
+  let fetches = 0;
+  let clock = 1_000_000;
+  const doc = findDidDocument({ didDocumentRef: 'exact-fragment-p1' });
+  const wrapped = didWebResolver({
+    now: () => clock,
+    fetch: async (url) => {
+      fetches++;
+      return jsonFetchStub('https://example.com/.well-known/did.json', doc)(url);
+    },
+  });
+  const first = await wrapped.resolve('did:web:example.com#p4');
+  assertEq(first, null, 'p4 is unpublished');
+  assertEq(fetches, 1, 'the document is fetched once');
+  clock += 30_000; // still within the 60s negative-cache window
+  const second = await wrapped.resolve('did:web:example.com#p4');
+  assertEq(second, null);
+  assertEq(fetches, 1, 'a negative-cached fragment must not trigger a refetch within 60s');
+});
+
+await check('didWebResolver refetches once, bypassing cache, when a stale entry misses a fragment', async () => {
+  let fetches = 0;
+  let clock = 1_000_000;
+  const staleDoc = findDidDocument({ didDocumentRef: 'exact-fragment-p1' }); // has p1..p3, p12; no p4
+  const rolledDoc = {
+    ...staleDoc,
+    verificationMethod: [
+      ...staleDoc.verificationMethod,
+      { id: '#p4', type: 'Ed25519VerificationKey2020', controller: 'did:web:example.com', publicKeyPem: 'ROLLED-P4-PEM' },
+    ],
+  };
+  const resolver = didWebResolver({
+    now: () => clock,
+    fetch: async (url) => {
+      fetches++;
+      const doc = fetches === 1 ? staleDoc : rolledDoc;
+      return jsonFetchStub('https://example.com/.well-known/did.json', doc)(url);
+    },
+  });
+  // First resolve populates the cache with a document that lacks #p4.
+  const missing = await resolver.resolve('did:web:example.com#p3');
+  assert(missing, 'p3 should resolve from the first fetch');
+  assertEq(fetches, 1);
+
+  // Advance the clock past the 60s floor without expiring the document's own
+  // (ceiling-default) TTL, then ask for the not-yet-cached #p4.
+  clock += 61_000;
+  const rolled = await resolver.resolve('did:web:example.com#p4');
+  assert(rolled, 'a single bypass refetch should see the newly published #p4');
+  assertEq(rolled.publicKeyPem, 'ROLLED-P4-PEM');
+  assertEq(fetches, 2, 'exactly one bypass refetch, not a refetch per call');
+});
+
+await check('directUrlResolver and trustDirectoryResolver leave non-period key documents unaffected', async () => {
+  const url = 'https://keys.example/plain.json';
+  const resolved = await resolveKey(url, [
+    directUrlResolver({ fetch: jsonFetchStub(url, { publicKey: edPubPem, algorithm: 'ed25519' }) }),
+  ]);
+  assert(resolved, 'a plain key document must still resolve');
+  assertEq(resolved.period, 0);
+  assertEq(resolved.identity, url);
+  assertEq(resolved.methodId, url);
+});
+
+// ---- HKDF + Ed25519 period-key derivation (draft §9.10, Appendix A) ----
+
+const periodKeysVectorPath = new URL('../conformance/vectors/period-keys-v1.json', import.meta.url);
+const periodKeysVector = JSON.parse(readFileSync(periodKeysVectorPath, 'utf8'));
+
+/**
+ * Reference derivation for spec §9.10: HKDF-SHA-256 with salt
+ * "htmltrust-period-key-v1" and info = "ed25519" || 0x00 || identity ||
+ * 0x00 || uint32be(N), producing a 32-byte seed used directly as the
+ * RFC 8032 Ed25519 private key seed.
+ */
+function deriveEd25519PeriodKey(masterBytes, identity, period) {
+  const salt = Buffer.from('htmltrust-period-key-v1', 'utf8');
+  const info = Buffer.concat([
+    Buffer.from('ed25519', 'utf8'),
+    Buffer.from([0]),
+    Buffer.from(identity, 'utf8'),
+    Buffer.from([0]),
+    (() => {
+      const b = Buffer.alloc(4);
+      b.writeUInt32BE(period);
+      return b;
+    })(),
+  ]);
+  const seed = Buffer.from(nodeCrypto.hkdfSync('sha256', masterBytes, salt, info, 32));
+  const pkcs8 = Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]);
+  const privateKey = nodeCrypto.createPrivateKey({ key: pkcs8, format: 'der', type: 'pkcs8' });
+  const publicKey = nodeCrypto.createPublicKey(privateKey);
+  return { seed, privateKey, publicKey };
+}
+
+await check('HKDF+Ed25519 period-key derivation reproduces period-keys-v1.json', async () => {
+  const master = Buffer.from(periodKeysVector.masterHex, 'hex');
+  for (const entry of periodKeysVector.periods) {
+    const { seed, privateKey, publicKey } = deriveEd25519PeriodKey(master, periodKeysVector.identity, entry.period);
+    assertEq(seed.toString('hex'), entry.seedHex, `period ${entry.period} seed`);
+    const spkiDer = publicKey.export({ type: 'spki', format: 'der' });
+    assertEq(encodeBase64Unpadded(spkiDer), entry.publicKeySpkiBase64, `period ${entry.period} public key`);
+    if (entry.signatureBase64) {
+      const signature = nodeCrypto.sign(null, Buffer.from(entry.signatureTestMessage, 'utf8'), privateKey);
+      assertEq(encodeBase64Unpadded(signature), entry.signatureBase64, `period ${entry.period} signature`);
+      assert(
+        await verifySignature(entry.signatureTestMessage, entry.signatureBase64, entry.publicKeyPem, 'ed25519'),
+        `period ${entry.period} signature must verify under the derived public key`,
+      );
+    }
+  }
+});
+
+await check('a period-3 signature verifies only under the period-3 key (period-signature-v1.json)', async () => {
+  const sigVector = JSON.parse(readFileSync(new URL('../conformance/vectors/period-signature-v1.json', import.meta.url), 'utf8'));
+  const period3Pem = periodKeysVector.periods.find((p) => p.period === 3).publicKeyPem;
+  const period2Pem = periodKeysVector.periods.find((p) => p.period === 2).publicKeyPem;
+  assert(
+    await verifySignature(sigVector.jcsPayload, sigVector.signature, period3Pem, 'ed25519'),
+    'the honest period-3 signature must verify under pk_3',
+  );
+  assert(
+    !(await verifySignature(sigVector.jcsPayload, sigVector.signatureFromPeriod2Mislabelled, period3Pem, 'ed25519')),
+    'a period-2 signature relabelled as period-3 must not verify under pk_3',
+  );
+  assert(
+    await verifySignature(sigVector.jcsPayload, sigVector.signatureFromPeriod2Mislabelled, period2Pem, 'ed25519'),
+    'the same bytes must verify under the period-2 key that actually made them',
+  );
 });
 
 await new Promise((r) => fixtureServer.close(r));

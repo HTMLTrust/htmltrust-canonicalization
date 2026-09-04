@@ -127,11 +127,11 @@ func TestDirectResolverAndResolverChain(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"publicKey": pemKey, "algorithm": "ed25519"})
 	}))
 	defer server.Close()
-	key, err := (DirectURLResolver{HTTPClient: server.Client()}).Resolve(context.Background(), server.URL+"/key")
+	key, err := (&DirectURLResolver{HTTPClient: server.Client()}).Resolve(context.Background(), server.URL+"/key")
 	if err != nil || key == nil || key.Algorithm != "ed25519" {
 		t.Fatalf("direct resolver = %#v, %v", key, err)
 	}
-	if _, err := ResolveKey(context.Background(), "did:fake:nope", []KeyResolver{DidWebResolver{}}); err == nil {
+	if _, err := ResolveKey(context.Background(), "did:fake:nope", []KeyResolver{&DidWebResolver{}}); err == nil {
 		t.Fatal("unmatched resolver chain did not fail")
 	}
 }
@@ -149,7 +149,7 @@ func TestTrustDirectoryResolverEscapesKeyID(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"publicKey": encodePublicKeyPEM(t, public), "algorithm": "ed25519"})
 	}))
 	defer server.Close()
-	key, err := (TrustDirectoryResolver{BaseURLs: []string{server.URL}, HTTPClient: server.Client()}).Resolve(context.Background(), "part/with?query#fragment")
+	key, err := (&TrustDirectoryResolver{BaseURLs: []string{server.URL}, HTTPClient: server.Client()}).Resolve(context.Background(), "part/with?query#fragment")
 	if err != nil || key == nil || key.Algorithm != "ed25519" {
 		t.Fatalf("trust directory resolver = %#v, %v", key, err)
 	}
@@ -165,17 +165,23 @@ func TestDidWebResolverUsesWellKnownDocument(t *testing.T) {
 			t.Fatalf("did document path = %q", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"verificationMethod": []map[string]string{{
-			"type": "Ed25519VerificationKey", "publicKeyPem": encodePublicKeyPEM(t, public),
-		}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "did:web:example.test",
+			"verificationMethod": []map[string]string{{
+				"id": "#key-1", "type": "Ed25519VerificationKey", "publicKeyPem": encodePublicKeyPEM(t, public),
+			}},
+		})
 	}))
 	defer server.Close()
 	client := server.Client()
 	target, _ := url.Parse(server.URL)
 	client.Transport = rewriteNativeTransport{base: client.Transport, target: target}
-	key, err := (DidWebResolver{HTTPClient: client}).Resolve(context.Background(), "did:web:example.test")
+	key, err := (&DidWebResolver{HTTPClient: client}).Resolve(context.Background(), "did:web:example.test")
 	if err != nil || key == nil || key.Algorithm != "ed25519" {
 		t.Fatalf("did:web resolver = %#v, %v", key, err)
+	}
+	if key.Period != 0 || key.Identity != "did:web:example.test" || key.MethodID != "did:web:example.test#key-1" {
+		t.Fatalf("did:web resolver period fields = %#v", key)
 	}
 }
 
@@ -184,7 +190,7 @@ func TestRemoteResolverRejectsOversizedBody(t *testing.T) {
 		_, _ = w.Write(make([]byte, maxRemoteKeyBytes+1))
 	}))
 	defer server.Close()
-	if _, err := (DirectURLResolver{HTTPClient: server.Client()}).Resolve(context.Background(), server.URL); err == nil {
+	if _, err := (&DirectURLResolver{HTTPClient: server.Client()}).Resolve(context.Background(), server.URL); err == nil {
 		t.Fatal("oversized resolver response was accepted")
 	}
 }

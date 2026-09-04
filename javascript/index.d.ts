@@ -116,6 +116,21 @@ export interface ResolvedKey {
   keyid: string;
   publicKeyPem: string;
   algorithm: string;
+  /**
+   * Period index (spec §9.10); 0 when `keyid` has no period fragment, or
+   * the resolved key document has no `period` member.
+   */
+  period: number;
+  /**
+   * The DID with no fragment, the key document's `identity`, or `keyid`
+   * itself for a non-period URL key (spec §9.10).
+   */
+  identity: string;
+  /**
+   * The expanded id of the selected DID verification method, or `keyid`
+   * for a URL-form key (spec §9.10).
+   */
+  methodId: string;
   /** `revoked: true` in the key document (spec §8.2). */
   revoked?: boolean;
   /** RFC3339 expiry from the key document (spec §8.2). */

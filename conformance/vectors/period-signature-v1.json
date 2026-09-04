@@ -1,0 +1,145 @@
+{
+  "description": "Period-scoped signature under did:web:example.com#p3 with a range revocation striking period 2, signed by the anchor #key-1 (the Appendix A test key).",
+  "identity": "did:web:example.com",
+  "didDocumentUrl": "https://example.com/.well-known/did.json",
+  "didDocument": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1"
+    ],
+    "id": "did:web:example.com",
+    "verificationMethod": [
+      {
+        "id": "did:web:example.com#key-1",
+        "type": "Ed25519VerificationKey2020",
+        "controller": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAro5HTnkh3VG+ZQ3PaEerRS3uY0ITOe/D1rBBsuhfTBk=\n-----END PUBLIC KEY-----"
+      },
+      {
+        "id": "did:web:example.com#p1",
+        "type": "Ed25519VerificationKey2020",
+        "controller": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/k+i5VWXMm69GkGvF3Ip4zpLTn66V3Lx+eMOHrdtxrU=\n-----END PUBLIC KEY-----"
+      },
+      {
+        "id": "did:web:example.com#p2",
+        "type": "Ed25519VerificationKey2020",
+        "controller": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAbo8f8MEwNhvAXQ+3ij7WIqX8Gh5Lp+5zUPEBivixS/A=\n-----END PUBLIC KEY-----"
+      },
+      {
+        "id": "did:web:example.com#p3",
+        "type": "Ed25519VerificationKey2020",
+        "controller": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAPS60r09fcjnJn03s0q30yzXguUU/Fx8X/6GfUX04NRo=\n-----END PUBLIC KEY-----"
+      },
+      {
+        "id": "did:web:example.com#p12",
+        "type": "Ed25519VerificationKey2020",
+        "controller": "did:web:example.com",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAisijcdb4iHjrqASJxmN6JxZF/2ALWJFGV2E6yQ2HqY8=\n-----END PUBLIC KEY-----"
+      }
+    ],
+    "assertionMethod": [
+      "did:web:example.com#key-1",
+      "did:web:example.com#p1",
+      "did:web:example.com#p2",
+      "did:web:example.com#p3",
+      "did:web:example.com#p12"
+    ],
+    "authentication": [
+      "did:web:example.com#key-1"
+    ],
+    "htmltrust": {
+      "periodScheme": "htmltrust-period-v1",
+      "periodEpoch": "2026-10-01T00:00:00Z",
+      "periodLength": "P1M"
+    }
+  },
+  "finalUrl": "HTTPS://EXAMPLE.COM:443/essays/engines#analysis",
+  "sourceHtml": "<signed-section profile=\"htmltrust-signature-v1\"\n                signature-scope=\"url\"\n                keyid=\"did:web:example.com#p3\"\n                algorithm=\"ed25519\"\n                content-hash=\"sha256:IVAwpRTDujszmYf76W497alVTtxGCgtJtQlasiFSCM8\"\n                signature=\"5rr3D6QoQ/KC2gL1HKgCSWdB3yF8Uh44zZvr0rgb7CXre3x9szzeYegtiaJGwvjADA8vnrg9zyRVDhcjwJV2BQ\">\n<meta name=\"author\" content=\"Ada Lovelace\">\n<meta name=\"signed-at\" content=\"2026-01-15T12:00:00Z\">\n<meta name=\"claim:License\" content=\"CC-BY-4.0\">\n<h1>On Analytical Engines</h1>\n<p>The engine weaves algebraic patterns &mdash; just as the loom weaves flowers.</p>\n<p>See <a href=\"/notes/engine\">the notes</a> and <img src=\"/img/ada.png\" alt=\"Portrait of Ada\">.</p>\n</signed-section>",
+  "signingObject": {
+    "algorithm": "ed25519",
+    "attributeProfile": "htmltrust-attrs-v1",
+    "canonicalizationProfile": "htmltrust-c14n-v1",
+    "claimsHash": "sha256:Fk5udwCnu1au8v5oaBsU+aSB5S2zSLqoF0xXO6HrIn4",
+    "contentHash": "sha256:IVAwpRTDujszmYf76W497alVTtxGCgtJtQlasiFSCM8",
+    "context": "https://htmltrust.org/protocol/signed-section",
+    "keyid": "did:web:example.com#p3",
+    "location": "https://example.com/essays/engines",
+    "profile": "htmltrust-signature-v1",
+    "scope": "url",
+    "signedAt": "2026-01-15T12:00:00Z",
+    "urlProfile": "htmltrust-safe-url-v1"
+  },
+  "jcsPayload": "{\"algorithm\":\"ed25519\",\"attributeProfile\":\"htmltrust-attrs-v1\",\"canonicalizationProfile\":\"htmltrust-c14n-v1\",\"claimsHash\":\"sha256:Fk5udwCnu1au8v5oaBsU+aSB5S2zSLqoF0xXO6HrIn4\",\"contentHash\":\"sha256:IVAwpRTDujszmYf76W497alVTtxGCgtJtQlasiFSCM8\",\"context\":\"https://htmltrust.org/protocol/signed-section\",\"keyid\":\"did:web:example.com#p3\",\"location\":\"https://example.com/essays/engines\",\"profile\":\"htmltrust-signature-v1\",\"scope\":\"url\",\"signedAt\":\"2026-01-15T12:00:00Z\",\"urlProfile\":\"htmltrust-safe-url-v1\"}",
+  "signature": "5rr3D6QoQ/KC2gL1HKgCSWdB3yF8Uh44zZvr0rgb7CXre3x9szzeYegtiaJGwvjADA8vnrg9zyRVDhcjwJV2BQ",
+  "signatureFromPeriod2Mislabelled": "EA+0rhk5ij10s/I1YHiGSmcJk+7hHCWh+TGegp76IyG0fwQKW+mLHOhf62oyV1LBuzNkF+wweAVu41uS2NPuAQ",
+  "revocationListUrl": "https://example.com/.well-known/htmltrust-revocations.json",
+  "revocationList": {
+    "signer": "did:web:example.com#key-1",
+    "algorithm": "ed25519",
+    "timestamp": "2026-12-01T00:00:00Z",
+    "revocations": [
+      {
+        "keyid": "did:web:example.com#p2",
+        "status": "revoked",
+        "revokedAt": "2026-11-20T00:00:00Z",
+        "publicKeyHash": "u9pFP1f7hN0ZLr5o7CeoCDMBPKtsL8wWDRytzwK+p/w",
+        "from-period": 2,
+        "to-period": 3
+      }
+    ],
+    "signature": "d9N66Ugr/gGPS1G9+D32LoeHss1LiBXiIF1hwT2JWn7a9ct2TMuWntLzZHGC5HyiWGdUUDrDqO0LyM2FLVgaAw"
+  },
+  "revocationListJcsInput": "{\"algorithm\":\"ed25519\",\"revocations\":[{\"from-period\":2,\"keyid\":\"did:web:example.com#p2\",\"publicKeyHash\":\"u9pFP1f7hN0ZLr5o7CeoCDMBPKtsL8wWDRytzwK+p/w\",\"revokedAt\":\"2026-11-20T00:00:00Z\",\"status\":\"revoked\",\"to-period\":3}],\"signer\":\"did:web:example.com#key-1\",\"timestamp\":\"2026-12-01T00:00:00Z\"}",
+  "publicKeyHash": {
+    "p2": "u9pFP1f7hN0ZLr5o7CeoCDMBPKtsL8wWDRytzwK+p/w",
+    "p3": "D2o9ZeRXmNG6sjRC3pfyY6wzLeZr7JxyR6nodpepmp4",
+    "key-1": "rv1dxinrhF8n4qfUfGS2+twfTPvwN+hVCnjaWf6XUh8"
+  },
+  "expected": [
+    {
+      "case": "period-3-signature",
+      "keyid": "did:web:example.com#p3",
+      "signature": "5rr3D6QoQ/KC2gL1HKgCSWdB3yF8Uh44zZvr0rgb7CXre3x9szzeYegtiaJGwvjADA8vnrg9zyRVDhcjwJV2BQ",
+      "result": "valid",
+      "keyPeriod": 3,
+      "revocationStatus": "not-revoked"
+    },
+    {
+      "case": "mislabelled-period-2-key",
+      "keyid": "did:web:example.com#p3",
+      "signature": "EA+0rhk5ij10s/I1YHiGSmcJk+7hHCWh+TGegp76IyG0fwQKW+mLHOhf62oyV1LBuzNkF+wweAVu41uS2NPuAQ",
+      "result": "signature-invalid"
+    },
+    {
+      "case": "period-2-struck-by-range",
+      "keyid": "did:web:example.com#p2",
+      "result": "key-revoked",
+      "note": "applies by material (publicKeyHash of #p2) and by range (from-period 2 <= 2 < to-period 3)"
+    },
+    {
+      "case": "period-1-outside-range",
+      "keyid": "did:web:example.com#p1",
+      "result": "not-revoked-continue",
+      "keyPeriod": 1
+    },
+    {
+      "case": "unpublished-period",
+      "keyid": "did:web:example.com#p4",
+      "result": "key-resolution-failed"
+    },
+    {
+      "case": "bare-identity-anchor",
+      "keyid": "did:web:example.com",
+      "result": "resolves-to-#key-1",
+      "keyPeriod": 0
+    },
+    {
+      "case": "pre-period-verifier",
+      "keyid": "did:web:example.com#p3",
+      "result": "signature-invalid",
+      "note": "first-usable-method selection picks #key-1"
+    }
+  ]
+}
